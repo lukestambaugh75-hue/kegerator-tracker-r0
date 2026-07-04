@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kegerator Tracker</title>
+  <meta name="robots" content="noindex, nofollow">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1314;
+      --panel: #171d20;
+      --panel-2: #20282c;
+      --ink: #f4f8f8;
+      --muted: #aebdc3;
+      --line: #334247;
+      --cold: #72d8ff;
+      --good: #8de67d;
+      --amber: #ffc66d;
+      --red: #ff8b8b;
+      --nav: rgba(12, 17, 18, .78);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    a { color: var(--cold); text-underline-offset: 3px; }
+    button, select {
+      font: inherit;
+      color: var(--ink);
+      background: #111719;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    button { cursor: pointer; }
+    .wrap { width: min(1180px, calc(100% - 32px)); margin: 0 auto; }
+    .hero {
+      min-height: 620px;
+      display: flex;
+      align-items: flex-end;
+      background:
+        linear-gradient(90deg, rgba(15,19,20,.98), rgba(15,19,20,.84) 42%, rgba(15,19,20,.20)),
+        url("assets/kegerator-hero.png") center right / cover no-repeat;
+      border-bottom: 1px solid var(--line);
+    }
+    .hero-content { padding: 28px 0 38px; max-width: 930px; }
+    .tracker-nav {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 8px;
+      background: var(--nav);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      backdrop-filter: blur(10px);
+    }
+    .tracker-nav span, .tracker-nav a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: .82rem;
+      font-weight: 800;
+    }
+    .tracker-nav span { color: #102026; background: var(--cold); }
+    .tracker-nav a { border: 1px solid rgba(255,255,255,.08); }
+    h1 { font-size: clamp(2.4rem, 7vw, 5.3rem); line-height: .95; margin: 20px 0 18px; letter-spacing: 0; }
+    h2 { font-size: 1.48rem; margin: 0 0 14px; }
+    h3 { font-size: 1.08rem; margin: 0 0 8px; }
+    p { margin: 8px 0; }
+    .lead { color: var(--muted); max-width: 760px; font-size: 1.08rem; }
+    .eyebrow {
+      color: var(--cold);
+      text-transform: uppercase;
+      font-size: .76rem;
+      font-weight: 850;
+      letter-spacing: .08em;
+    }
+    .metrics, .pick-grid, .spread-grid, .mover-grid, .filters, .chart-controls {
+      display: grid;
+      gap: 14px;
+    }
+    .metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); margin-top: 26px; }
+    .metric, .panel, .pick-card, .spread-card, .mover-card {
+      background: linear-gradient(180deg, var(--panel), var(--panel-2));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .metric strong { display: block; font-size: 1.52rem; margin-top: 5px; line-height: 1.05; }
+    .metric small, .muted { color: var(--muted); }
+    .section { padding: 32px 0; }
+    .section.alt { background: #121819; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .pick-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .spread-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .mover-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .badge-row { display: flex; flex-wrap: wrap; gap: 7px; margin: 12px 0; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: .78rem;
+      font-weight: 750;
+    }
+    .badge.good { color: #102316; background: var(--good); border-color: var(--good); }
+    .badge.cold { color: #08242f; background: var(--cold); border-color: var(--cold); }
+    .badge.warn { color: #2b1d00; background: var(--amber); border-color: var(--amber); }
+    .badge.red { color: #2e0808; background: var(--red); border-color: var(--red); }
+    .filters { grid-template-columns: repeat(6, minmax(0, 1fr)); margin: 16px 0; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: .78rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+    select { min-height: 38px; padding: 7px 9px; text-transform: none; letter-spacing: 0; }
+    table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    th, td { text-align: left; vertical-align: top; padding: 11px 9px; border-bottom: 1px solid var(--line); }
+    th { color: var(--cold); font-size: .74rem; text-transform: uppercase; letter-spacing: .06em; }
+    .price { font-weight: 900; color: var(--ink); }
+    .quality { color: var(--muted); }
+    .quality.confirmed { color: var(--good); }
+    .quality.estimated, .quality.snapshot_varies { color: var(--amber); }
+    .chart-shell { min-height: 310px; }
+    .chart-controls { grid-template-columns: 2fr repeat(3, 72px); align-items: end; margin-bottom: 14px; }
+    .chart-controls button { min-height: 38px; padding: 7px 10px; color: var(--muted); }
+    .chart-controls button.active { color: #0b2026; background: var(--cold); border-color: var(--cold); font-weight: 900; }
+    canvas { width: 100%; height: 240px; display: block; background: #101719; border: 1px solid var(--line); border-radius: 8px; }
+    .footer { color: var(--muted); font-size: .84rem; padding: 26px 0 42px; }
+    .empty { color: var(--muted); padding: 16px 0; }
+    @media (max-width: 980px) {
+      .metrics, .pick-grid, .spread-grid, .mover-grid, .filters, .chart-controls { grid-template-columns: 1fr; }
+      .hero { min-height: 680px; background-position: 62% center; }
+      table, thead, tbody, tr, th, td { display: block; }
+      thead { display: none; }
+      tr { border-bottom: 1px solid var(--line); padding: 10px 0; }
+      td { border: 0; padding: 6px 0; }
+      td::before { content: attr(data-label); display: block; color: var(--cold); font-size: .72rem; font-weight: 850; text-transform: uppercase; letter-spacing: .06em; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap hero-content">
+      <nav class="tracker-nav" aria-label="Deal Trackers">
+        <span>Deal Trackers</span>
+        <a href="https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/">Kegerators</a>
+        <a href="https://lukestambaugh75-hue.github.io/ps5-tv-deal-tracker-r0/">PS5 + TV</a>
+        <a href="https://lukestambaugh75-hue.github.io/ford-raptor-tracker-r0/">Raptor</a>
+      </nav>
+      <p class="eyebrow">Hot Houston garage price tracker</p>
+      <h1>Kegerator Tracker</h1>
+      <p class="lead" id="heroLead">Loading current kegerator prices, garage heat suitability, and retailer spread.</p>
+      <div class="metrics" id="kpis"></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="section alt">
+      <div class="wrap">
+        <span class="eyebrow">Garage-ready</span>
+        <h2>Outdoor-rated and cold-headroom picks first</h2>
+        <div class="pick-grid" id="garagePicks"></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="wrap panel">
+        <span class="eyebrow">Sortable listings</span>
+        <h2>Current Retailer Rows</h2>
+        <div class="filters">
+          <label>Tap count<select id="tapFilter"></select></label>
+          <label>Complete kit<select id="kitFilter"></select></label>
+          <label>Outdoor<select id="outdoorFilter"></select></label>
+          <label>Garage fit<select id="garageFilter"></select></label>
+          <label>Retailer<select id="retailerFilter"></select></label>
+          <label>Sort<select id="sortSelect"></select></label>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Retailer</th>
+              <th>Price</th>
+              <th>Garage fit</th>
+              <th>Kit</th>
+              <th>Quality</th>
+            </tr>
+          </thead>
+          <tbody id="listingRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="wrap">
+        <span class="eyebrow">Cross-retailer spread</span>
+        <h2>Where the same model varies most</h2>
+        <div class="spread-grid" id="spreadGrid"></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="wrap">
+        <span class="eyebrow">Price movement</span>
+        <h2>Discounts and drops</h2>
+        <div class="mover-grid" id="moverGrid"></div>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="wrap panel chart-shell">
+        <span class="eyebrow">Price history</span>
+        <h2>Per-model trend</h2>
+        <div class="chart-controls">
+          <label>Model<select id="chartModel"></select></label>
+          <button type="button" data-range="30">30</button>
+          <button type="button" data-range="90">90</button>
+          <button type="button" data-range="all" class="active">All</button>
+        </div>
+        <canvas id="historyChart" width="1000" height="300" aria-label="Price history line chart"></canvas>
+        <p class="muted" id="chartNote"></p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="wrap panel">
+        <span class="eyebrow">Source rules</span>
+        <h2>Refresh Guardrails</h2>
+        <p class="muted">The refresh script uses cached polite source checks, respects robots.txt, and marks blocked or unconfirmed rows as estimated rather than promoting stale prices as confirmed.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="wrap footer">Confirm final cart total, tax, shipping or pickup timing, seller identity, keg fit, and garage ventilation before buying.</footer>
+
+  <script>
+    const state = { listings: [], specs: [], history: [], range: "all" };
+    const urls = {
+      listings: "data/listings.json",
+      specs: "data/specs.json",
+      history: "history.csv"
+    };
+
+    const fmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
+    const money = value => value === null || value === undefined || value === "" ? "not shown" : fmt.format(Number(value)).replace(".00", "");
+    const uniq = values => [...new Set(values.filter(value => value !== null && value !== undefined && value !== ""))].sort();
+    const modelKey = row => `${row.brand} ${row.model}`;
+
+    function badgeClass(text, quality) {
+      if (quality === "estimated" || quality === "snapshot_varies") return "warn";
+      if (String(text).startsWith("Best")) return "good";
+      if (String(text).startsWith("Good")) return "cold";
+      if (String(text).startsWith("Fair")) return "warn";
+      return "";
+    }
+
+    function parseCsv(text) {
+      const lines = text.trim().split(/\r?\n/);
+      if (lines.length < 2) return [];
+      const headers = lines[0].split(",");
+      return lines.slice(1).map(line => {
+        const cols = [];
+        let current = "";
+        let quoted = false;
+        for (const ch of line) {
+          if (ch === '"') quoted = !quoted;
+          else if (ch === "," && !quoted) { cols.push(current); current = ""; }
+          else current += ch;
+        }
+        cols.push(current);
+        return Object.fromEntries(headers.map((header, index) => [header, cols[index] || ""]));
+      });
+    }
+
+    async function loadData() {
+      const [listings, specs, historyText] = await Promise.all([
+        fetch(urls.listings).then(r => r.json()),
+        fetch(urls.specs).then(r => r.json()),
+        fetch(urls.history).then(r => r.text())
+      ]);
+      state.listings = listings;
+      state.specs = specs;
+      state.history = parseCsv(historyText);
+      initControls();
+      renderAll();
+    }
+
+    function initControls() {
+      setOptions("tapFilter", ["All", ...uniq(state.specs.map(row => String(row.tap_count)))]);
+      setOptions("kitFilter", ["All", "Complete kit", "Conversion/base"]);
+      setOptions("outdoorFilter", ["All", "Outdoor-rated", "Indoor"]);
+      setOptions("garageFilter", ["All", ...uniq(state.specs.map(row => row.garage_suitability))]);
+      setOptions("retailerFilter", ["All", ...uniq(state.listings.map(row => row.retailer))]);
+      setOptions("sortSelect", ["Lowest price", "Biggest discount", "Garage-ready first", "Retailer"]);
+      setOptions("chartModel", uniq(state.history.map(row => `${row.brand} ${row.model}`)));
+      ["tapFilter", "kitFilter", "outdoorFilter", "garageFilter", "retailerFilter", "sortSelect", "chartModel"].forEach(id => {
+        document.getElementById(id).addEventListener("change", renderAll);
+      });
+      document.querySelectorAll("[data-range]").forEach(button => {
+        button.addEventListener("click", () => {
+          state.range = button.dataset.range;
+          document.querySelectorAll("[data-range]").forEach(node => node.classList.toggle("active", node === button));
+          renderChart();
+        });
+      });
+    }
+
+    function setOptions(id, options) {
+      const select = document.getElementById(id);
+      select.innerHTML = options.map(value => `<option>${escapeHtml(value)}</option>`).join("");
+    }
+
+    function filteredListings() {
+      const tap = document.getElementById("tapFilter").value;
+      const kit = document.getElementById("kitFilter").value;
+      const outdoor = document.getElementById("outdoorFilter").value;
+      const garage = document.getElementById("garageFilter").value;
+      const retailer = document.getElementById("retailerFilter").value;
+      const sort = document.getElementById("sortSelect").value;
+      let rows = state.listings.filter(row => {
+        if (tap !== "All" && String(row.tap_count) !== tap) return false;
+        if (kit === "Complete kit" && !row.complete_kit) return false;
+        if (kit === "Conversion/base" && row.complete_kit) return false;
+        if (outdoor === "Outdoor-rated" && !row.outdoor_rated) return false;
+        if (outdoor === "Indoor" && row.outdoor_rated) return false;
+        if (garage !== "All" && row.garage_suitability !== garage) return false;
+        if (retailer !== "All" && row.retailer !== retailer) return false;
+        return true;
+      });
+      const price = row => row.current_price ?? 999999;
+      if (sort === "Lowest price") rows.sort((a, b) => price(a) - price(b));
+      if (sort === "Biggest discount") rows.sort((a, b) => (b.discount_pct ?? -1) - (a.discount_pct ?? -1));
+      if (sort === "Garage-ready first") rows.sort((a, b) => garageRank(a) - garageRank(b) || price(a) - price(b));
+      if (sort === "Retailer") rows.sort((a, b) => a.retailer.localeCompare(b.retailer) || price(a) - price(b));
+      return rows;
+    }
+
+    function garageRank(row) {
+      if (row.outdoor_rated) return 0;
+      if (String(row.garage_suitability).startsWith("Good - deep")) return 1;
+      if (String(row.garage_suitability).startsWith("Good")) return 2;
+      return 3;
+    }
+
+    function renderAll() {
+      renderKpis();
+      renderGaragePicks();
+      renderTable();
+      renderSpreads();
+      renderMovers();
+      renderChart();
+    }
+
+    function renderKpis() {
+      const complete = state.listings.filter(row => row.complete_kit && row.in_stock && row.current_price !== null);
+      const minBy = rows => rows.length ? rows.reduce((a, b) => Number(a.current_price) <= Number(b.current_price) ? a : b) : null;
+      const single = minBy(complete.filter(row => row.tap_count === 1));
+      const dual = minBy(complete.filter(row => row.tap_count === 2));
+      const outdoor = minBy(complete.filter(row => row.outdoor_rated));
+      const prices = state.listings.map(row => row.current_price).filter(value => value !== null && value !== undefined).map(Number);
+      const latest = state.listings.map(row => row.retrieved).sort().pop() || "not refreshed";
+      document.getElementById("heroLead").textContent = `${state.specs.length} models tracked across ${uniq(state.listings.map(row => row.retailer)).length} retailers. Outdoor rating and cold headroom are promoted because a closed Houston garage can run far hotter than ordinary indoor appliance ratings.`;
+      document.getElementById("kpis").innerHTML = [
+        card("Lowest single tap", single ? money(single.current_price) : "n/a", single ? `${single.retailer} - ${single.brand} ${single.model}` : "complete kit rows"),
+        card("Lowest dual tap", dual ? money(dual.current_price) : "n/a", dual ? `${dual.retailer} - ${dual.brand} ${dual.model}` : "complete kit rows"),
+        card("Lowest outdoor", outdoor ? money(outdoor.current_price) : "n/a", outdoor ? `${outdoor.retailer} - ${outdoor.brand} ${outdoor.model}` : "outdoor-rated rows"),
+        card("Price range", prices.length ? `${money(Math.min(...prices))} - ${money(Math.max(...prices))}` : "n/a", "visible retailer rows"),
+        card("Models tracked", state.specs.length, `${state.listings.length} current price rows`),
+        card("Last refresh", formatTimestamp(latest), "source timestamp")
+      ].join("");
+    }
+
+    function formatTimestamp(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC", timeZoneName: "short" });
+    }
+
+    function card(label, value, note) {
+      return `<div class="metric"><span class="eyebrow">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(note)}</small></div>`;
+    }
+
+    function renderGaragePicks() {
+      const rows = [...state.listings]
+        .filter(row => row.in_stock && row.current_price !== null)
+        .sort((a, b) => garageRank(a) - garageRank(b) || Number(a.current_price) - Number(b.current_price))
+        .slice(0, 6);
+      document.getElementById("garagePicks").innerHTML = rows.map(row => `
+        <article class="pick-card">
+          <span class="eyebrow">${escapeHtml(row.retailer)}</span>
+          <h3><a href="${escapeHtml(row.source_url)}">${escapeHtml(row.brand)} ${escapeHtml(row.model)}</a></h3>
+          <p class="price">${money(row.current_price)}</p>
+          <div class="badge-row">
+            <span class="badge ${badgeClass(row.garage_suitability)}">${escapeHtml(row.garage_suitability)}</span>
+            <span class="badge">${row.tap_count} tap</span>
+            <span class="badge ${row.complete_kit ? "good" : "warn"}">${row.complete_kit ? "complete kit" : "conversion/base"}</span>
+          </div>
+          <p class="muted">${escapeHtml(row.description)}</p>
+        </article>
+      `).join("") || `<p class="empty">No current garage-ready rows.</p>`;
+    }
+
+    function renderTable() {
+      const rows = filteredListings();
+      document.getElementById("listingRows").innerHTML = rows.map(row => `
+        <tr>
+          <td data-label="Model"><a href="${escapeHtml(row.source_url)}">${escapeHtml(row.brand)} ${escapeHtml(row.model)}</a><br><span class="muted">${escapeHtml(row.description)}</span></td>
+          <td data-label="Retailer">${escapeHtml(row.retailer)}</td>
+          <td data-label="Price"><span class="price">${money(row.current_price)}</span>${row.list_price ? `<br><span class="muted">list ${money(row.list_price)} / ${row.discount_pct}% off</span>` : ""}</td>
+          <td data-label="Garage fit"><span class="badge ${badgeClass(row.garage_suitability)}">${escapeHtml(row.garage_suitability)}</span></td>
+          <td data-label="Kit">${row.tap_count} tap<br><span class="muted">${row.complete_kit ? "complete kit" : "conversion/base"}</span></td>
+          <td data-label="Quality"><span class="quality ${escapeHtml(row.data_quality)}">${escapeHtml(row.data_quality)}</span><br><span class="muted">${escapeHtml(row.retrieved || "")}</span></td>
+        </tr>
+      `).join("") || `<tr><td colspan="6" class="empty">No rows match the current filters.</td></tr>`;
+    }
+
+    function renderSpreads() {
+      const grouped = new Map();
+      for (const row of state.listings.filter(item => item.current_price !== null)) {
+        const key = modelKey(row);
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key).push(row);
+      }
+      const spreads = [...grouped.entries()].map(([model, rows]) => {
+        const sorted = rows.slice().sort((a, b) => Number(a.current_price) - Number(b.current_price));
+        const min = sorted[0];
+        const max = sorted[sorted.length - 1];
+        return { model, rows, min, max, spread: Number(max.current_price) - Number(min.current_price) };
+      }).filter(item => item.rows.length > 1).sort((a, b) => b.spread - a.spread).slice(0, 8);
+      document.getElementById("spreadGrid").innerHTML = spreads.map(item => `
+        <article class="spread-card">
+          <span class="eyebrow">${escapeHtml(item.model)}</span>
+          <h3>${money(item.min.current_price)} best at ${escapeHtml(item.min.retailer)}</h3>
+          <p class="muted">High row: ${escapeHtml(item.max.retailer)} at ${money(item.max.current_price)}</p>
+          <p class="price">Spread: ${money(item.spread)}</p>
+        </article>
+      `).join("") || `<p class="empty">Spread appears after multiple retailers share a model.</p>`;
+    }
+
+    function renderMovers() {
+      const discounts = state.listings
+        .filter(row => row.discount_pct !== null && row.discount_pct > 0)
+        .sort((a, b) => b.discount_pct - a.discount_pct)
+        .slice(0, 3)
+        .map(row => ({ label: `${row.brand} ${row.model}`, headline: `${row.discount_pct}% off`, note: `${row.retailer} - ${money(row.current_price)} vs list ${money(row.list_price)}` }));
+      const drops = latestDrops().slice(0, 3).map(row => ({ label: row.model, headline: `${money(row.drop)} drop`, note: `${row.retailer}: ${money(row.previous)} to ${money(row.current)}` }));
+      const items = [...drops, ...discounts].slice(0, 6);
+      document.getElementById("moverGrid").innerHTML = items.map(item => `
+        <article class="mover-card">
+          <span class="eyebrow">${escapeHtml(item.label)}</span>
+          <h3>${escapeHtml(item.headline)}</h3>
+          <p class="muted">${escapeHtml(item.note)}</p>
+        </article>
+      `).join("") || `<p class="empty">Discount and drop cards appear after history has comparable observations.</p>`;
+    }
+
+    function latestDrops() {
+      const grouped = new Map();
+      for (const row of state.history) {
+        const key = `${row.brand} ${row.model}::${row.retailer}`;
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key).push(row);
+      }
+      return [...grouped.values()].map(rows => {
+        rows.sort((a, b) => a.date.localeCompare(b.date));
+        if (rows.length < 2) return null;
+        const prev = rows[rows.length - 2];
+        const curr = rows[rows.length - 1];
+        const previous = Number(prev.price);
+        const current = Number(curr.price);
+        if (!(previous > current)) return null;
+        return { model: `${curr.brand} ${curr.model}`, retailer: curr.retailer, previous, current, drop: previous - current };
+      }).filter(Boolean).sort((a, b) => b.drop - a.drop);
+    }
+
+    function renderChart() {
+      const select = document.getElementById("chartModel");
+      const selected = select.value || select.options[0]?.value;
+      if (!selected) return;
+      const rows = state.history
+        .filter(row => `${row.brand} ${row.model}` === selected)
+        .map(row => ({ ...row, priceNumber: Number(row.price), dateObject: new Date(`${row.date}T00:00:00Z`) }))
+        .filter(row => Number.isFinite(row.priceNumber))
+        .sort((a, b) => a.dateObject - b.dateObject);
+      const filtered = filterRange(rows);
+      drawChart(filtered, selected);
+      const retailers = uniq(filtered.map(row => row.retailer)).join(", ");
+      document.getElementById("chartNote").textContent = filtered.length ? `${filtered.length} observations across ${retailers}.` : "No history rows for this range.";
+    }
+
+    function filterRange(rows) {
+      if (state.range === "all" || rows.length === 0) return rows;
+      const days = Number(state.range);
+      const latest = rows[rows.length - 1].dateObject;
+      const cutoff = new Date(latest);
+      cutoff.setUTCDate(cutoff.getUTCDate() - days);
+      return rows.filter(row => row.dateObject >= cutoff);
+    }
+
+    function drawChart(rows, label) {
+      const canvas = document.getElementById("historyChart");
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#101719";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = "#334247";
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 5; i++) {
+        const y = 32 + i * 52;
+        ctx.beginPath();
+        ctx.moveTo(54, y);
+        ctx.lineTo(canvas.width - 24, y);
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#aebdc3";
+      ctx.font = "14px system-ui";
+      ctx.fillText(label, 54, 24);
+      if (rows.length === 0) {
+        ctx.fillText("No history rows", 54, 152);
+        return;
+      }
+      const prices = rows.map(row => row.priceNumber);
+      const min = Math.min(...prices);
+      const max = Math.max(...prices);
+      const xFor = index => rows.length === 1 ? canvas.width / 2 : 54 + index * ((canvas.width - 88) / (rows.length - 1));
+      const yFor = price => {
+        if (max === min) return 150;
+        return 256 - ((price - min) / (max - min)) * 200;
+      };
+      ctx.strokeStyle = "#72d8ff";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      rows.forEach((row, index) => {
+        const x = xFor(index);
+        const y = yFor(row.priceNumber);
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      rows.forEach((row, index) => {
+        const x = xFor(index);
+        const y = yFor(row.priceNumber);
+        ctx.fillStyle = "#8de67d";
+        ctx.beginPath();
+        ctx.arc(x, y, 5, 0, Math.PI * 2);
+        ctx.fill();
+        if (index === rows.length - 1) {
+          ctx.fillStyle = "#f4f8f8";
+          ctx.fillText(money(row.priceNumber), x - 8, y - 12);
+        }
+      });
+      ctx.fillStyle = "#aebdc3";
+      ctx.fillText(money(min), 12, yFor(min) + 4);
+      ctx.fillText(money(max), 12, yFor(max) + 4);
+      ctx.fillText(rows[0].date, 54, 288);
+      ctx.fillText(rows[rows.length - 1].date, canvas.width - 124, 288);
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, char => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[char]));
+    }
+
+    loadData().catch(error => {
+      document.getElementById("heroLead").textContent = `Dashboard data could not load: ${error.message}`;
+    });
+  </script>
+</body>
+</html>

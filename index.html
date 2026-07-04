@@ -27,6 +27,7 @@
       color: var(--ink);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       line-height: 1.5;
+      overflow-x: hidden;
     }
     a { color: var(--cold); text-underline-offset: 3px; }
     button, select {
@@ -49,9 +50,11 @@
     }
     .hero-content { padding: 28px 0 38px; max-width: 930px; }
     .tracker-nav {
-      display: inline-flex;
+      display: flex;
       flex-wrap: wrap;
       gap: 8px;
+      width: fit-content;
+      max-width: 100%;
       padding: 8px;
       background: var(--nav);
       border: 1px solid var(--line);
@@ -68,14 +71,16 @@
       text-decoration: none;
       font-size: .82rem;
       font-weight: 800;
+      white-space: nowrap;
     }
     .tracker-nav span { color: #102026; background: var(--cold); }
     .tracker-nav a { border: 1px solid rgba(255,255,255,.08); }
-    h1 { font-size: clamp(2.4rem, 7vw, 5.3rem); line-height: .95; margin: 20px 0 18px; letter-spacing: 0; }
+    h1 { font-size: clamp(2.4rem, 7vw, 5.3rem); line-height: .95; margin: 20px 0 18px; letter-spacing: 0; overflow-wrap: anywhere; }
     h2 { font-size: 1.48rem; margin: 0 0 14px; }
     h3 { font-size: 1.08rem; margin: 0 0 8px; }
     p { margin: 8px 0; }
     .lead { color: var(--muted); max-width: 760px; font-size: 1.08rem; }
+    .title-break { display: inline; }
     .eyebrow {
       color: var(--cold);
       text-transform: uppercase;
@@ -135,8 +140,29 @@
     .footer { color: var(--muted); font-size: .84rem; padding: 26px 0 42px; }
     .empty { color: var(--muted); padding: 16px 0; }
     @media (max-width: 980px) {
+      .wrap { width: min(1180px, calc(100% - 32px)); }
       .metrics, .pick-grid, .spread-grid, .mover-grid, .filters, .chart-controls { grid-template-columns: 1fr; }
-      .hero { min-height: 680px; background-position: 62% center; }
+      .hero {
+        min-height: auto;
+        align-items: flex-start;
+        background:
+          linear-gradient(90deg, rgba(15,19,20,.98), rgba(15,19,20,.88) 66%, rgba(15,19,20,.42)),
+          url("assets/kegerator-hero.png") 58% center / cover no-repeat;
+      }
+      .wrap.hero-content { width: calc(100% - 32px); max-width: calc(100% - 32px); margin: 0 auto; }
+      .hero-content { padding: 28px 0 24px; }
+      .tracker-nav { display: grid; grid-template-columns: 1fr; width: 100%; }
+      .tracker-nav span, .tracker-nav a {
+        justify-content: center;
+        min-width: 0;
+        min-height: 36px;
+        white-space: normal;
+        text-align: center;
+      }
+      h1 { font-size: clamp(2.2rem, 11vw, 3.2rem); line-height: 1; word-break: break-word; }
+      h1 .title-break { display: block; }
+      .lead { max-width: 100%; font-size: 1rem; }
+      .metric strong { font-size: 1.72rem; }
       table, thead, tbody, tr, th, td { display: block; }
       thead { display: none; }
       tr { border-bottom: 1px solid var(--line); padding: 10px 0; }
@@ -156,7 +182,7 @@
         <a href="https://lukestambaugh75-hue.github.io/ford-raptor-tracker-r0/">Raptor</a>
       </nav>
       <p class="eyebrow">Hot Houston garage price tracker</p>
-      <h1>Kegerator Tracker</h1>
+      <h1>Kegerator <span class="title-break">Tracker</span></h1>
       <p class="lead" id="heroLead">Loading current kegerator prices, garage heat suitability, and retailer spread.</p>
       <div class="metrics" id="kpis"></div>
     </div>
@@ -367,7 +393,7 @@
       const outdoor = minBy(complete.filter(row => row.outdoor_rated));
       const prices = state.listings.map(row => row.current_price).filter(value => value !== null && value !== undefined).map(Number);
       const latest = state.listings.map(row => row.retrieved).sort().pop() || "not refreshed";
-      document.getElementById("heroLead").textContent = `${state.specs.length} models tracked across ${uniq(state.listings.map(row => row.retailer)).length} retailers. Outdoor rating and cold headroom are promoted because a closed Houston garage can run far hotter than ordinary indoor appliance ratings.`;
+      document.getElementById("heroLead").textContent = `${state.specs.length} models. Garage-ready picks first.`;
       document.getElementById("kpis").innerHTML = [
         card("Lowest single tap", single ? money(single.current_price) : "n/a", single ? `${single.retailer} - ${single.brand} ${single.model}` : "complete kit rows"),
         card("Lowest dual tap", dual ? money(dual.current_price) : "n/a", dual ? `${dual.retailer} - ${dual.brand} ${dual.model}` : "complete kit rows"),

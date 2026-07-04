@@ -124,6 +124,8 @@ def test_dashboard_fetches_live_json_and_csv():
     assert "Garage-ready" in html
     assert "Cross-retailer spread" in html
     assert "Deal Trackers" in html
+    assert "Main Dashboard" in html
+    assert "https://lukestambaugh75-hue.github.io/daily-dashboards-public-safe-r0/" in html
 
 
 def test_email_payload_has_exact_recipients():

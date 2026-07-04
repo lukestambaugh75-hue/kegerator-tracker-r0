@@ -14,7 +14,7 @@ def main() -> None:
         body = response.read().decode("utf-8", errors="ignore")
     if response.status != 200:
         raise SystemExit(f"unexpected status {response.status}")
-    required = ["Kegerator Tracker", "data/listings.json", "Deal Trackers"]
+    required = ["Kegerator Tracker", "data/listings.json", "Deal Trackers", "Main Dashboard"]
     missing = [text for text in required if text not in body]
     if missing:
         raise SystemExit(f"public dashboard missing: {missing}")

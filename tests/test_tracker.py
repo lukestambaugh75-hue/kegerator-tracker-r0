@@ -150,3 +150,14 @@ def test_email_payload_has_exact_recipients():
     assert payload["cc"] == []
     assert payload["bcc"] == []
     assert "https://example.com/keg" in payload["body_text"]
+
+
+def test_email_automation_mirror_uses_browser_gmail_route():
+    text = Path("automation/kegerator-tracker-email.toml").read_text(encoding="utf-8")
+
+    assert "lukestambaugh75@gmail.com" in text
+    assert "devin.mullen89@gmail.com" in text
+    assert "no CC/BCC" in text or "Do not add CC or BCC" in text
+    assert "out/latest-email.json" in text
+    assert "signed-in Chrome/Gmail browser route" in text
+    assert "https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/" in text

@@ -1,0 +1,33 @@
+version = 1
+id = "kegerator-tracker-email"
+kind = "cron"
+name = "Kegerator tracker email"
+prompt = """Run the Kegerator Tracker refresh, public dashboard verification, and approved email delivery.
+
+Work in `/Users/lukestambaugh/Documents/Files for GitHub/Kegerator Tracker r0`.
+
+This automation is explicitly approved to email exactly these two recipients:
+- `lukestambaugh75@gmail.com`
+- `devin.mullen89@gmail.com`
+
+Do not add CC or BCC. This approval is scoped only to this kegerator tracker.
+
+Required run order:
+1. Run `git pull --ff-only`.
+2. Run `/usr/bin/python3 scripts/refresh.py`.
+3. Run `make verify`.
+4. If tracked files changed and the branch is `main`, stage only touched repo files, commit with `Refresh Kegerator dashboard data`, and push to origin. Do not force-push.
+5. Run `make pages-check`. If GitHub Pages is not current yet, wait and retry.
+6. Run `/usr/bin/python3 tools/build_email.py --output-dir out`.
+7. Read `out/latest-email.json` and send one Gmail email using the signed-in Chrome/Gmail browser route. Address it exactly to `lukestambaugh75@gmail.com` and `devin.mullen89@gmail.com`, with no CC/BCC, using the generated subject and body. Include the public dashboard link `https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/`.
+8. Before sending, visibly verify the two recipient chips, no CC/BCC, subject, body, and dashboard link.
+9. If the Gmail connector reports missing OAuth scopes, do not stop to repair the connector during the tracker run. Use the signed-in Chrome/Gmail browser route.
+10. After the email attempt is complete, stop and wait for the next scheduled run.
+
+Do not purchase anything or contact retailers. Confirm final cart total, tax, pickup/delivery timing, seller identity, keg fit, and garage ventilation before buying."""
+status = "READY_TO_REGISTER"
+rrule = "DTSTART;TZID=America/Chicago:20260705T060000\nRRULE:FREQ=DAILY;BYHOUR=6;BYMINUTE=0;BYSECOND=0"
+model = "gpt-5.5"
+reasoning_effort = "high"
+execution_environment = "local"
+cwds = ["/Users/lukestambaugh/Documents/Files for GitHub/Kegerator Tracker r0"]

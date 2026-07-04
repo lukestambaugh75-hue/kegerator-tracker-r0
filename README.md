@@ -20,6 +20,7 @@ https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/
 - `scripts/refresh.py` - normalizes data, attempts polite cached source checks, rewrites listings/specs, and appends new history rows.
 - `.github/workflows/refresh.yml` - daily 11:00 UTC refresh with manual dispatch.
 - `tools/build_email.py` - creates a reviewable email payload for Luke and Devin only.
+- `automation/kegerator-tracker-email.toml` - repo mirror of the Codex email automation run contract.
 
 ## Local Commands
 
@@ -52,4 +53,6 @@ Generated email payloads are addressed exactly to:
 - `lukestambaugh75@gmail.com`
 - `devin.mullen89@gmail.com`
 
-No CC/BCC. This repo generates the payload; sending still uses the approved Gmail/browser route and should be verified before sending to Devin.
+No CC/BCC. This repo generates `out/latest-email.json`; sending uses the approved signed-in Chrome/Gmail browser route so it does not depend on the Gmail connector OAuth scope. Before sending, verify the two recipient chips, no CC/BCC, subject, body, and dashboard link.
+
+The automation mirror lives at `automation/kegerator-tracker-email.toml`. It is marked `READY_TO_REGISTER` because Codex.app scheduled jobs are registered in the app UI, not from this repo.

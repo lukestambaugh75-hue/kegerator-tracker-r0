@@ -102,6 +102,15 @@
     }
     .metric strong { display: block; font-size: 1.52rem; margin-top: 5px; line-height: 1.05; }
     .metric small, .muted { color: var(--muted); }
+    .color-index {
+      margin-top: 16px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--cold);
+      border-radius: 8px;
+      background: rgba(114,216,255,.08);
+    }
+    .color-index p { margin-bottom: 0; }
     .section { padding: 32px 0; }
     .section.alt { background: #121819; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
     .pick-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -186,6 +195,10 @@
       <h1>Kegerator <span class="title-break">Tracker</span></h1>
       <p class="lead" id="heroLead">Loading current kegerator prices, garage heat suitability, and retailer spread.</p>
       <div class="metrics" id="kpis"></div>
+      <div class="color-index">
+        <span class="eyebrow">Color index</span>
+        <p class="muted"><strong>Green</strong> means best or buy-ready, especially outdoor-rated or complete-kit rows. <strong>Blue</strong> means good cooling/headroom or neutral tracker accents. <strong>Amber</strong> means garage-heat caution, estimated data, or conversion/base rows. <strong>Red</strong> is reserved for blocked, stale, or out-of-stock warnings.</p>
+      </div>
     </div>
   </header>
 

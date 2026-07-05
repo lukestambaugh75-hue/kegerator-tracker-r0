@@ -125,6 +125,11 @@ def test_dashboard_fetches_live_json_and_csv():
     assert "Cross-retailer spread" in html
     assert "Deal Trackers" in html
     assert "Main Dashboard" in html
+    assert "Color index" in html
+    assert "Green" in html
+    assert "Blue" in html
+    assert "Amber" in html
+    assert "Red" in html
     assert "https://lukestambaugh75-hue.github.io/daily-dashboards-public-safe-r0/" in html
 
 

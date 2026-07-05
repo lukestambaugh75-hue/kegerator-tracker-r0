@@ -130,6 +130,8 @@ def test_dashboard_fetches_live_json_and_csv():
     assert "Blue" in html
     assert "Amber" in html
     assert "Red" in html
+    assert "information only" in html
+    assert "not a recommendation" in html
     assert "https://lukestambaugh75-hue.github.io/daily-dashboards-public-safe-r0/" in html
 
 

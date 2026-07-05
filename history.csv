@@ -23,3 +23,27 @@ date,brand,model,retailer,price,list_price,source,data_quality
 2026-07-04,EdgeStar,BR2001SS,EdgeStar.com,366,,https://www.edgestar.com/search?q=BR2001SS,confirmed
 2026-07-04,EdgeStar,BR2001BL,EdgeStar.com,469,,https://www.edgestar.com/search?q=BR2001BL,confirmed
 2026-07-04,EdgeStar,BR7001SSOD,EdgeStar.com,472.11,,https://www.edgestar.com/search?q=BR7001SSOD,confirmed
+2026-07-05,Danby,DKC054A1BSL2DB,Home Depot,649.99,,https://www.homedepot.com/s/DKC054A1BSL2DB,estimated
+2026-07-05,EdgeStar,BR2001BL,EdgeStar.com,469,,https://www.edgestar.com/search?q=BR2001BL,estimated
+2026-07-05,EdgeStar,BR2001SS,EdgeStar.com,366,,https://www.edgestar.com/search?q=BR2001SS,estimated
+2026-07-05,EdgeStar,BR3002BL,EdgeStar.com,599,,https://www.edgestar.com/search?q=BR3002BL,estimated
+2026-07-05,EdgeStar,BR7001SSOD,EdgeStar.com,472.11,,https://www.edgestar.com/search?q=BR7001SSOD,estimated
+2026-07-05,EdgeStar,EFRB150-SS,Home Depot,429,,https://www.homedepot.com/s/EFRB150-SS,estimated
+2026-07-05,EdgeStar,EFRB200,Home Depot,499,,https://www.homedepot.com/s/EFRB200,estimated
+2026-07-05,EdgeStar,KC1000SS,EdgeStar.com,559,,https://www.edgestar.com/search?q=KC1000SS,estimated
+2026-07-05,EdgeStar,KC2000SS,EdgeStar.com,699,,https://www.edgestar.com/search?q=KC2000SS,estimated
+2026-07-05,Kegco,HBK209S-2,Home Depot,848.35,,https://www.homedepot.com/s/HBK209S-2,estimated
+2026-07-05,Kegco,HK38BSC-2,Home Depot,1666.55,,https://www.homedepot.com/s/HK38BSC-2,estimated
+2026-07-05,Kegco,HK38BSU-2,Home Depot,1534.24,,https://www.homedepot.com/s/HK38BSU-2,estimated
+2026-07-05,Kegco,HK38SSC-L-2,Home Depot,1868.63,,https://www.homedepot.com/s/HK38SSC-L-2,estimated
+2026-07-05,Kegco,HK38SSU-2,Kegco.com,1822.01,1913,https://kegco.com/search?q=HK38SSU-2,estimated
+2026-07-05,Kegco,K209SS-1,Home Depot,758.84,,https://www.homedepot.com/s/K209SS-1,estimated
+2026-07-05,Kegco,K309B-1,Home Depot,843.99,,https://www.homedepot.com/s/K309B-1,estimated
+2026-07-05,Kegco,K309B-1,Kegco.com,914.55,961,https://kegco.com/search?q=K309B-1,estimated
+2026-07-05,Kegco,K309B-2,Home Depot,828.14,,https://www.homedepot.com/s/K309B-2,estimated
+2026-07-05,Kegco,K309B-2,Kegco.com,1004.85,1055.99,https://kegco.com/search?q=K309B-2,estimated
+2026-07-05,Kegco,K309SS-2,Home Depot,668.76,,https://www.homedepot.com/s/K309SS-2,estimated
+2026-07-05,Kegco,K309SS-2,Kegco.com,1015.35,1066.99,https://kegco.com/search?q=K309SS-2,estimated
+2026-07-05,Kegco,K309X-1,Home Depot,879,,https://www.homedepot.com/s/K309X-1,estimated
+2026-07-05,Kegco,Z163S-2,Home Depot,860.43,,https://www.homedepot.com/s/Z163S-2,estimated
+2026-07-05,Summit,SBC683OSTWIN,Home Depot,1909.99,,https://www.homedepot.com/s/SBC683OSTWIN,estimated

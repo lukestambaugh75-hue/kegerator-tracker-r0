@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import math
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -124,6 +125,43 @@ def validate_refresh_status(refresh: dict) -> dict:
         raise ValueError("quality_counts values must be non-negative integers")
     if sum(quality.values()) != refresh["row_count"]:
         raise ValueError("quality_counts must equal row_count")
+    if refresh["source_count"] != refresh["row_count"]:
+        raise ValueError("source_count must equal row_count for the durable successful snapshot")
+
+    success_at = parse_utc(normalized["data_refreshed_at_utc"])
+    attempt_at = parse_utc(normalized["last_attempt_at_utc"])
+    if success_at is not None:
+        if refresh["row_count"] <= 0:
+            raise ValueError("a successful data refresh requires a positive row_count")
+        expected_quality = {
+            "verified": refresh["row_count"],
+            "estimated": 0,
+            "blocked": 0,
+        }
+        if quality != expected_quality:
+            raise ValueError("durable successful snapshot quality must be fully verified")
+    elif refresh["row_count"] != 0 or any(quality.values()):
+        raise ValueError("status without a successful refresh cannot claim snapshot rows")
+
+    if status == "success":
+        if success_at is None:
+            raise ValueError("a successful attempt requires data_refreshed_at_utc")
+        if attempt_at is None:
+            raise ValueError("a successful attempt requires last_attempt_at_utc")
+        if attempt_at != success_at:
+            raise ValueError("successful attempt timestamp must equal data_refreshed_at_utc")
+        if normalized["last_attempt_reason"] is not None:
+            raise ValueError("a successful attempt cannot retain a failure reason")
+    elif status in FAILURE_STATUSES:
+        if attempt_at is None:
+            raise ValueError(f"{status} attempt requires last_attempt_at_utc")
+        if success_at is not None and attempt_at <= success_at:
+            raise ValueError(f"{status} attempt must be strictly newer than the successful data refresh")
+    else:
+        if success_at is not None:
+            raise ValueError("unknown attempt status contradicts a successful data refresh")
+        if attempt_at is not None or normalized["last_attempt_reason"] is not None:
+            raise ValueError("unknown attempt status cannot retain attempt metadata")
     return normalized
 
 
@@ -254,7 +292,12 @@ def apply_refresh_outcome(
     if outcome_status == "success" and prior_success is not None and attempted_at <= prior_success:
         raise ValueError("successful evidence must be newer than the stored success")
 
-    expected_count = status["source_count"] or len(prior_listings)
+    expected_count = status["source_count"]
+    if expected_count <= 0:
+        raise ValueError("refresh requires a positive expected_count")
+    if status["row_count"] != expected_count or len(prior_listings) != expected_count:
+        raise ValueError("source_count, row_count, and prior listings must match expected_count")
+    prior_identities = _stable_identity_set(prior_listings, "prior")
     confirmed = outcome.get("confirmed_count")
     failed = outcome.get("failed_count")
     if not isinstance(confirmed, int) or isinstance(confirmed, bool) or confirmed < 0:
@@ -263,16 +306,32 @@ def apply_refresh_outcome(
         raise ValueError("failed_count must be a non-negative integer")
     if confirmed + failed != expected_count:
         raise ValueError("refresh outcome counts must equal the source count")
+    if outcome_status == "success" and not (confirmed == expected_count and failed == 0):
+        raise ValueError("success requires every target confirmed and zero failed")
+    if outcome_status == "blocked" and not (confirmed == 0 and failed == expected_count):
+        raise ValueError("blocked requires zero confirmed and every target failed")
+    if outcome_status == "partial" and not (
+        0 < confirmed < expected_count and failed == expected_count - confirmed
+    ):
+        raise ValueError("partial requires strictly between zero and every target confirmed")
+    if outcome_status == "failed" and not (confirmed == 0 and failed == expected_count):
+        raise ValueError("failed requires zero confirmed and every target failed")
 
     if outcome_status == "success":
-        if failed != 0 or confirmed != expected_count or len(candidate_listings) != expected_count:
+        if len(candidate_listings) != expected_count:
             raise ValueError("success requires every target to be confirmed")
+        candidate_identities = _stable_identity_set(candidate_listings, "candidate")
+        if candidate_identities != prior_identities:
+            raise ValueError("successful candidate identity set must exactly match the prior snapshot")
         attempt_iso = utc_iso(attempted_at)
         for index, row in enumerate(candidate_listings):
             if row.get("data_quality") != "confirmed":
                 raise ValueError(f"successful row {index} is not confirmed")
             if utc_iso(row.get("retrieved")) != attempt_iso:
                 raise ValueError(f"successful row {index} is not from the exact current attempt")
+            _require_finite_positive(row.get("current_price"), f"successful row {index} current_price")
+            if row.get("list_price") not in (None, ""):
+                _require_finite_positive(row.get("list_price"), f"successful row {index} list_price")
         updated = copy.deepcopy(status)
         updated.update(
             {
@@ -305,3 +364,32 @@ def apply_refresh_outcome(
         }
     )
     return copy.deepcopy(prior_listings), validate_refresh_status(updated), False
+
+
+def _stable_identity_set(listings: list[dict], label: str) -> frozenset[tuple[str, str, str, str]]:
+    identities: list[tuple[str, str, str, str]] = []
+    for index, row in enumerate(listings):
+        if not isinstance(row, dict):
+            raise ValueError(f"{label} listing {index} must be an object")
+        identity = tuple(
+            str(row.get(field) or "").strip()
+            for field in ("brand", "model", "retailer", "source_url")
+        )
+        if not all(identity):
+            raise ValueError(f"{label} listing {index} has an incomplete stable identity")
+        identities.append(identity)
+    if len(set(identities)) != len(identities):
+        raise ValueError(f"{label} listings contain a duplicate stable identity")
+    return frozenset(identities)
+
+
+def _require_finite_positive(value: object, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a finite positive price")
+    try:
+        amount = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a finite positive price") from exc
+    if not math.isfinite(amount) or amount <= 0:
+        raise ValueError(f"{label} must be a finite positive price")
+    return amount

@@ -559,7 +559,8 @@ def test_refresh_state_precedence_boundaries_and_central_dst_labels():
     assert evaluate_refresh(blocked, now=success + timedelta(hours=2))["state"] == "Blocked"
 
     equal_attempt = refresh_fixture(attempt_status="failed", attempt_reason="same-time record")
-    assert evaluate_refresh(equal_attempt, now=success)["state"] == "Fresh"
+    with pytest.raises(ValueError, match="strictly newer"):
+        evaluate_refresh(equal_attempt, now=success)
 
     archived = copy.deepcopy(blocked)
     archived["archived"] = True
@@ -637,6 +638,57 @@ def test_stale_http_cache_is_never_promoted_to_current_confirmation(monkeypatch)
     assert calls == [False]
 
 
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "https://kegco.com/search?q=K309B-1",
+        "https://www.homedepot.com/s/K309B-1",
+    ],
+)
+def test_search_and_query_sources_are_non_confirming_without_fetch(source_url, monkeypatch):
+    from scripts import refresh
+
+    def forbidden_fetch(*args, **kwargs):
+        raise AssertionError("search paths must never be fetched as confirming evidence")
+
+    monkeypatch.setattr(refresh, "fetch_url", forbidden_fetch)
+    row = listing_fixture("K309B-1", 800)
+    row["source_url"] = source_url
+
+    amount, evidence = refresh.try_live_price(row, offline=False)
+
+    assert amount is None
+    assert evidence == "search_url_skipped"
+
+
+def test_direct_page_must_contain_expected_model_before_price_can_confirm(monkeypatch):
+    from scripts import refresh
+
+    row = listing_fixture("K309B-1", 800)
+    row["source_url"] = "https://kegco.com/products/k309b-1"
+    monkeypatch.setattr(refresh, "fetch_url", lambda url, use_cache=False: "<title>Unrelated appliance</title>$123.45")
+    assert refresh.try_live_price(row, offline=False) == (None, "identity_mismatch")
+
+    monkeypatch.setattr(
+        refresh,
+        "fetch_url",
+        lambda url, use_cache=False: "<title>Kegco K309B-1 kegerator</title>$843.99 $999.99",
+    )
+    assert refresh.try_live_price(row, offline=False) == (843.99, "parsed")
+
+
+def test_direct_page_uses_model_bound_price_not_unrelated_page_minimum(monkeypatch):
+    from scripts import refresh
+
+    row = listing_fixture("K309B-1", 800)
+    row["source_url"] = "https://kegco.com/products/k309b-1"
+    unrelated = "<aside>Other appliance $123.45</aside>" + ("x" * 2000)
+    product = "<main><h1>Kegco K309B-1</h1><p>Sale $843.99</p><p>List $999.99</p></main>"
+    monkeypatch.setattr(refresh, "fetch_url", lambda url, use_cache=False: unrelated + product)
+
+    assert refresh.try_live_price(row, offline=False) == (843.99, "parsed")
+
+
 @pytest.mark.parametrize("attempt_status", ["blocked", "partial", "failed"])
 def test_unsuccessful_attempt_preserves_entire_snapshot_and_changes_attempt_only(attempt_status):
     from scripts.refresh_state import apply_refresh_outcome
@@ -702,6 +754,175 @@ def test_only_complete_success_replaces_snapshot_and_advances_success_time():
     assert final_status["last_attempt_status"] == "success"
     assert final_status["last_attempt_reason"] is None
     assert final_status["quality_counts"] == {"verified": 2, "estimated": 0, "blocked": 0}
+
+
+def test_complete_success_accepts_reordered_exact_stable_identity_set():
+    from scripts.refresh_state import apply_refresh_outcome
+
+    prior = [listing_fixture("ONE", 800), listing_fixture("TWO", 900)]
+    attempted_at = "2026-07-11T12:00:00Z"
+    candidate = [
+        listing_fixture("TWO", 750, attempted_at),
+        listing_fixture("ONE", 700, attempted_at),
+    ]
+    outcome = {
+        "status": "success",
+        "reason": "2 of 2 targets confirmed from current evidence.",
+        "attempted_at_utc": attempted_at,
+        "confirmed_count": 2,
+        "failed_count": 0,
+    }
+
+    final_rows, _, succeeded = apply_refresh_outcome(
+        prior,
+        refresh_fixture(),
+        candidate,
+        outcome,
+        now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert succeeded is True
+    assert final_rows == candidate
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "missing", "substituted"])
+def test_complete_success_rejects_duplicate_missing_or_substituted_target_identity(mutation):
+    from scripts.refresh_state import apply_refresh_outcome
+
+    prior = [listing_fixture("ONE", 800), listing_fixture("TWO", 900)]
+    attempted_at = "2026-07-11T12:00:00Z"
+    candidate = [
+        listing_fixture("ONE", 700, attempted_at),
+        listing_fixture("TWO", 750, attempted_at),
+    ]
+    if mutation == "duplicate":
+        candidate[1] = copy.deepcopy(candidate[0])
+    elif mutation == "missing":
+        candidate = candidate[:1]
+    else:
+        candidate[1]["source_url"] = "https://kegco.com/products/substituted"
+    outcome = {
+        "status": "success",
+        "reason": "2 of 2 targets confirmed from current evidence.",
+        "attempted_at_utc": attempted_at,
+        "confirmed_count": 2,
+        "failed_count": 0,
+    }
+
+    with pytest.raises(ValueError, match="identity|every target"):
+        apply_refresh_outcome(
+            prior,
+            refresh_fixture(),
+            candidate,
+            outcome,
+            now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("current_price", 0),
+        ("current_price", -1),
+        ("current_price", float("nan")),
+        ("current_price", float("inf")),
+        ("list_price", float("-inf")),
+    ],
+)
+def test_complete_success_rejects_non_finite_or_non_positive_prices(field, value):
+    from scripts.refresh_state import apply_refresh_outcome
+
+    attempted_at = "2026-07-11T12:00:00Z"
+    candidate = [
+        listing_fixture("ONE", 700, attempted_at),
+        listing_fixture("TWO", 750, attempted_at),
+    ]
+    candidate[0][field] = value
+    outcome = {
+        "status": "success",
+        "reason": "2 of 2 targets confirmed from current evidence.",
+        "attempted_at_utc": attempted_at,
+        "confirmed_count": 2,
+        "failed_count": 0,
+    }
+
+    with pytest.raises(ValueError, match="finite positive"):
+        apply_refresh_outcome(
+            [listing_fixture("ONE", 800), listing_fixture("TWO", 900)],
+            refresh_fixture(),
+            candidate,
+            outcome,
+            now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+        )
+
+
+@pytest.mark.parametrize(
+    ("outcome_status", "confirmed", "failed"),
+    [
+        ("success", 1, 1),
+        ("blocked", 1, 1),
+        ("partial", 0, 2),
+        ("partial", 2, 0),
+        ("failed", 1, 1),
+    ],
+)
+def test_refresh_outcome_counts_fail_closed_by_status(outcome_status, confirmed, failed):
+    from scripts.refresh_state import apply_refresh_outcome
+
+    attempted_at = "2026-07-11T12:00:00Z"
+    candidate = [
+        listing_fixture("ONE", 700, attempted_at),
+        listing_fixture("TWO", 750, attempted_at),
+    ]
+    outcome = {
+        "status": outcome_status,
+        "reason": "test outcome",
+        "attempted_at_utc": attempted_at,
+        "confirmed_count": confirmed,
+        "failed_count": failed,
+    }
+
+    with pytest.raises(ValueError, match="requires"):
+        apply_refresh_outcome(
+            [listing_fixture("ONE", 800), listing_fixture("TWO", 900)],
+            refresh_fixture(),
+            candidate,
+            outcome,
+            now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_apply_refresh_requires_positive_consistent_expected_count_and_unique_prior_targets():
+    from scripts.refresh_state import apply_refresh_outcome
+
+    attempted_at = "2026-07-11T12:00:00Z"
+    outcome = {
+        "status": "blocked",
+        "reason": "no evidence",
+        "attempted_at_utc": attempted_at,
+        "confirmed_count": 0,
+        "failed_count": 2,
+    }
+    inconsistent = refresh_fixture()
+    inconsistent["source_count"] = 3
+    with pytest.raises(ValueError, match="source_count.*row_count"):
+        apply_refresh_outcome(
+            [listing_fixture("ONE", 800), listing_fixture("TWO", 900)],
+            inconsistent,
+            [],
+            outcome,
+            now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+        )
+
+    duplicate_prior = [listing_fixture("ONE", 800), listing_fixture("ONE", 900)]
+    with pytest.raises(ValueError, match="duplicate stable identity"):
+        apply_refresh_outcome(
+            duplicate_prior,
+            refresh_fixture(),
+            [],
+            outcome,
+            now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+        )
 
 
 @pytest.mark.parametrize(
@@ -848,6 +1069,30 @@ def test_history_repair_check_write_idempotence_and_validation(tmp_path):
         repair_history(bad, check=True)
 
 
+@pytest.mark.parametrize(
+    ("price", "list_price"),
+    [
+        ("NaN", "900"),
+        ("Inf", "900"),
+        ("-Inf", "900"),
+        ("800", "NaN"),
+        ("800", "Inf"),
+    ],
+)
+def test_history_repair_rejects_non_finite_prices(tmp_path, price, list_price):
+    from scripts.repair_history import repair_history
+
+    path = tmp_path / "history.csv"
+    path.write_text(
+        "date,brand,model,retailer,price,list_price,source,data_quality\n"
+        f"2026-07-04,Kegco,A,Kegco.com,{price},{list_price},https://kegco.com/a,confirmed\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid price"):
+        repair_history(path, check=True)
+
+
 def test_history_repair_cli_reports_exact_check_counts_and_exit_codes(tmp_path):
     path = tmp_path / "history.csv"
     header = "date,brand,model,retailer,price,list_price,source,data_quality\n"
@@ -966,6 +1211,111 @@ def test_non_actionable_email_contains_no_prices_or_recommendation_language(stat
     assert "lowest" not in lowered
     assert "best" not in lowered
     assert "current recommendation" not in lowered
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        refresh_fixture(
+            attempt_at="2026-07-10T13:10:23Z",
+            attempt_status="blocked",
+            attempt_reason="Lowest $   499 row was the best CURRENT-RECOMMENDATION.",
+        ),
+        refresh_fixture(
+            success_at=None,
+            attempt_at="2026-07-10T13:10:23Z",
+            attempt_status="failed",
+            attempt_reason="Lowest $   499 row was the best CURRENT-RECOMMENDATION.",
+            count=0,
+        ),
+    ],
+)
+def test_non_actionable_email_sanitizes_actionable_language_inside_reason(status):
+    from tools.build_email import build_payload
+
+    payload = build_payload(
+        [listing_fixture("ONE", 843.99), listing_fixture("TWO", 999.99)],
+        [],
+        status,
+        CANONICAL_DASHBOARD_URL,
+        now=datetime(2026, 7, 10, 14, 0, tzinfo=timezone.utc),
+    )
+    combined = f"{payload['subject']}\n{payload['body_text']}\n{payload['body_html']}".lower()
+    assert "$" not in combined
+    assert "lowest" not in combined
+    assert "best" not in combined
+    assert "current recommendation" not in combined
+    assert "current-recommendation" not in combined
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "success_missing_attempt",
+        "success_mismatched_attempt",
+        "failure_missing_attempt",
+        "failure_equal_success",
+        "failure_before_success",
+        "unknown_with_attempt",
+        "success_missing_success",
+    ],
+)
+def test_refresh_status_rejects_contradictory_or_missing_chronology(mutation):
+    from scripts.refresh_state import validate_refresh_status
+
+    status = refresh_fixture()
+    if mutation == "success_missing_attempt":
+        status["last_attempt_at_utc"] = None
+    elif mutation == "success_mismatched_attempt":
+        status["last_attempt_at_utc"] = "2026-07-04T13:00:00Z"
+    elif mutation == "failure_missing_attempt":
+        status.update(last_attempt_status="blocked", last_attempt_at_utc=None, last_attempt_reason="blocked")
+    elif mutation == "failure_equal_success":
+        status.update(last_attempt_status="blocked", last_attempt_reason="blocked")
+    elif mutation == "failure_before_success":
+        status.update(
+            last_attempt_status="failed",
+            last_attempt_at_utc="2026-07-04T11:59:59Z",
+            last_attempt_reason="failed",
+        )
+    elif mutation == "unknown_with_attempt":
+        status.update(
+            data_refreshed_at_utc=None,
+            last_attempt_status="unknown",
+            last_attempt_at_utc="2026-07-04T12:00:00Z",
+            last_attempt_reason=None,
+            source_count=0,
+            row_count=0,
+            quality_counts={"verified": 0, "estimated": 0, "blocked": 0},
+        )
+    else:
+        status["data_refreshed_at_utc"] = None
+
+    with pytest.raises(ValueError, match="attempt|successful|strictly newer|unknown"):
+        validate_refresh_status(status)
+
+
+def test_public_verifier_inherits_refresh_chronology_validation():
+    from scripts.check_public_pages import validate_public_status
+
+    status = refresh_fixture(
+        attempt_status="blocked",
+        attempt_reason="blocked",
+    )
+    with pytest.raises(ValueError, match="strictly newer"):
+        validate_public_status(
+            status,
+            [listing_fixture("ONE", 800), listing_fixture("TWO", 900)],
+            now=datetime(2026, 7, 4, 13, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_unknown_dashboard_uses_not_recorded_and_derived_reason_copy():
+    html = Path("index.html").read_text(encoding="utf-8")
+
+    assert 'if (!value) return "Not recorded"' in html
+    assert 'refreshReason: "No successful data refresh is recorded."' in html
+    assert 'document.getElementById("refreshReason").textContent = state.refreshReason' in html
 
 
 def test_workflow_serializes_publishes_status_then_fails_non_success_without_double_refresh():

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 import sys
 import tempfile
@@ -37,11 +38,14 @@ def _validate_row(raw_line: str, line_number: int) -> list[str]:
         if not row[field].strip():
             raise ValueError(f"missing {field} at line {line_number}")
     try:
-        if float(row["price"]) < 0:
+        price = float(row["price"])
+        if not math.isfinite(price) or price <= 0:
             raise ValueError
-        if row["list_price"] and float(row["list_price"]) < 0:
-            raise ValueError
-    except ValueError as exc:
+        if row["list_price"]:
+            list_price = float(row["list_price"])
+            if not math.isfinite(list_price) or list_price <= 0:
+                raise ValueError
+    except (TypeError, ValueError) as exc:
         raise ValueError(f"invalid price at line {line_number}") from exc
     parsed = urlsplit(row["source"])
     if parsed.scheme != "https" or not parsed.netloc:

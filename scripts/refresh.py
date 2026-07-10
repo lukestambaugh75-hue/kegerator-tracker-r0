@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import html as html_lib
 import json
 import os
 import re
@@ -180,17 +181,67 @@ def parse_price(html: str | None) -> float | None:
     return min(candidates) if candidates else None
 
 
+def page_contains_model_identity(page_html: str | None, model: object) -> bool:
+    """Require the expected model identity before accepting a page price."""
+    return bool(_model_identity_spans(page_html, model))
+
+
+def _model_identity_spans(page_html: str | None, model: object) -> list[tuple[int, int]]:
+    if not page_html:
+        return []
+    parts = re.findall(r"[a-z0-9]+", str(model or "").casefold())
+    if not parts:
+        return []
+    pattern = r"[^a-z0-9]*".join(re.escape(part) for part in parts)
+    decoded = html_lib.unescape(page_html)
+    return [match.span() for match in re.finditer(pattern, decoded, flags=re.IGNORECASE)]
+
+
+def parse_model_bound_price(page_html: str | None, model: object) -> float | None:
+    """Choose the valid price nearest an exact model occurrence, never a page-wide minimum."""
+    if not page_html:
+        return None
+    decoded = html_lib.unescape(page_html)
+    spans = _model_identity_spans(decoded, model)
+    candidates: list[tuple[int, int, float]] = []
+    for model_start, model_end in spans:
+        window_start = max(0, model_start - 1200)
+        window_end = min(len(decoded), model_end + 1200)
+        for match in PRICE_RE.finditer(decoded, window_start, window_end):
+            try:
+                amount = float(match.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            if not 100 <= amount <= 5000:
+                continue
+            if match.end() <= model_start:
+                distance = model_start - match.end()
+            elif match.start() >= model_end:
+                distance = match.start() - model_end
+            else:
+                distance = 0
+            candidates.append((distance, match.start(), amount))
+    return min(candidates)[2] if candidates else None
+
+
+def source_is_direct_product_page(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    segments = [segment.casefold() for segment in parsed.path.split("/") if segment]
+    return not parsed.query and not any(segment in {"s", "search"} for segment in segments)
+
+
 def try_live_price(row: dict, offline: bool) -> tuple[float | None, str]:
     if offline:
         return None, "offline"
     url = row.get("source_url") or ""
-    parsed = urllib.parse.urlparse(url)
-    if parsed.query or parsed.path.rstrip("/").endswith("/s"):
+    if not source_is_direct_product_page(url):
         return None, "search_url_skipped"
     # A cache can help humans diagnose source changes, but it is never current
     # confirmation for a scheduled data attempt.
     html = fetch_url(url, use_cache=False)
-    amount = parse_price(html)
+    if html and not page_contains_model_identity(html, row.get("model")):
+        return None, "identity_mismatch"
+    amount = parse_model_bound_price(html, row.get("model"))
     return amount, "parsed" if amount is not None else "blocked_or_no_price"
 
 

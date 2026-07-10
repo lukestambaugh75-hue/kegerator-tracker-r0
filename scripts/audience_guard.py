@@ -23,7 +23,7 @@ except ImportError:
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_DASHBOARD_URL = "https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/"
 CANONICAL_INDEX_PATH = Path("index.html")
-CANONICAL_INDEX_SHA256 = "ae13c7ee7bc9326f019388d5b7034741d35f1f05010f02721ad8ab6f0fede78f"
+CANONICAL_INDEX_SHA256 = "26e5806df57cb4b933f9fc7a1f0139240fa7f2c6b00d8a8c0c39c5c3bb0794a0"
 EXPECTED_RECIPIENTS = ["lukestambaugh75@gmail.com", "devin.mullen89@gmail.com"]
 ALLOWED_RETAIL_HOSTS = {
     "kegco.com",

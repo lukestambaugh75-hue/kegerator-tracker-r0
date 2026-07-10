@@ -266,7 +266,7 @@
   <footer class="wrap footer">Confirm final cart total, tax, shipping or pickup timing, seller identity, keg fit, and garage ventilation before buying.</footer>
 
   <script>
-    const state = { listings: [], specs: [], refresh: null, refreshState: "Unknown", actionable: false, history: [], range: "all" };
+    const state = { listings: [], specs: [], refresh: null, refreshState: "Unknown", refreshReason: "No successful data refresh is recorded.", actionable: false, history: [], range: "all" };
     const fmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
     const money = value => value === null || value === undefined || value === "" ? "not shown" : fmt.format(Number(value)).replace(".00", "");
     const uniq = values => [...new Set(values.filter(value => value !== null && value !== undefined && value !== ""))].sort();
@@ -284,6 +284,20 @@
       if (ageMinutes <= Number(refresh.cadence_minutes)) return "Fresh";
       if (ageMinutes <= Number(refresh.cadence_minutes) + Number(refresh.grace_minutes)) return "Due";
       return "Stale";
+    }
+
+    function deriveRefreshReason(refresh, derivedState) {
+      if (derivedState === "Archived") return "This tracker is archived and no longer refreshes.";
+      if (!refresh.data_refreshed_at_utc) return "No successful data refresh is recorded.";
+      const successAt = new Date(refresh.data_refreshed_at_utc);
+      const attemptAt = new Date(refresh.last_attempt_at_utc);
+      const now = new Date();
+      if (Number.isNaN(successAt.getTime()) || successAt > now) return "The recorded successful data refresh is in the future.";
+      if (refresh.last_attempt_at_utc && (Number.isNaN(attemptAt.getTime()) || attemptAt > now)) return "The recorded latest attempt is in the future.";
+      if (derivedState === "Blocked") return `Latest attempt ${refresh.last_attempt_status}: ${refresh.last_attempt_reason}`;
+      if (derivedState === "Fresh") return "Data is within the 24-hour refresh cadence.";
+      if (derivedState === "Due") return "Data is due but remains inside the 3-hour grace window.";
+      return "Data is older than the cadence and grace window.";
     }
 
     function representedSnapshot() {
@@ -334,6 +348,7 @@
       state.specs = specs;
       state.refresh = refreshStatus;
       state.refreshState = deriveRefreshState(refreshStatus);
+      state.refreshReason = deriveRefreshReason(refreshStatus, state.refreshState);
       state.actionable = ["Fresh", "Due"].includes(state.refreshState) && representedSnapshot();
       state.history = parseCsv(historyText);
       initControls();
@@ -414,7 +429,7 @@
       document.getElementById("lastSuccessfulRefresh").textContent = formatTimestamp(state.refresh.data_refreshed_at_utc);
       const attemptStatus = state.refresh.last_attempt_status || "unknown";
       document.getElementById("latestRefreshAttempt").textContent = `${formatTimestamp(state.refresh.last_attempt_at_utc)} (${attemptStatus})`;
-      document.getElementById("refreshReason").textContent = state.refresh.last_attempt_reason || "The latest complete source check succeeded.";
+      document.getElementById("refreshReason").textContent = state.refreshReason;
       const warning = document.getElementById("historicalWarning");
       warning.hidden = state.actionable;
       document.getElementById("garageHeading").textContent = state.actionable ? "Outdoor-rated and cold-headroom rows first" : "Garage-fit context from the stored snapshot";
@@ -445,6 +460,7 @@
     }
 
     function formatTimestamp(value) {
+      if (!value) return "Not recorded";
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) return value;
       return date.toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Chicago", timeZoneName: "short" });

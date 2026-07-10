@@ -75,7 +75,23 @@ def _snapshot_is_represented(listings: list[dict], refresh: dict) -> bool:
 
 
 def _sanitized_reason(value: object) -> str:
-    return re.sub(r"\$\s?\d[\d,]*(?:\.\d{1,2})?", "[amount withheld]", str(value or "Not recorded"))
+    text = re.sub(
+        r"\$\s*\d[\d,]*(?:\.\d{1,2})?",
+        "[amount withheld]",
+        str(value or "Not recorded"),
+    )
+    text = re.sub(
+        r"\bcurrent[\s_-]+recommendations?\b",
+        "actionable claim withheld",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"\b(?:best|lowest)\b",
+        "comparison claim withheld",
+        text,
+        flags=re.IGNORECASE,
+    )
 
 
 def build_payload(

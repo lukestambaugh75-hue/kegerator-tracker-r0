@@ -540,6 +540,11 @@ def listing_fixture(model: str, price: float, retrieved: str = "2026-07-04T12:00
     }
 
 
+def jsonld_page(*nodes: dict) -> str:
+    payload = nodes[0] if len(nodes) == 1 else {"@context": "https://schema.org", "@graph": list(nodes)}
+    return f'<script type="application/ld+json">{json.dumps(payload)}</script>'
+
+
 def test_refresh_state_precedence_boundaries_and_central_dst_labels():
     from scripts.refresh_state import evaluate_refresh, format_central
 
@@ -596,6 +601,7 @@ def test_refresh_outcomes_classify_zero_partial_and_complete_current_evidence(mo
     assert blocked["status"] == "blocked"
     assert blocked["confirmed_count"] == 0
     assert blocked["failed_count"] == 2
+    assert blocked["expected_count"] == 2
     assert all(row["data_quality"] == "blocked" for row in blocked_rows)
 
     monkeypatch.setattr(
@@ -607,6 +613,7 @@ def test_refresh_outcomes_classify_zero_partial_and_complete_current_evidence(mo
     assert partial["status"] == "partial"
     assert partial["confirmed_count"] == 1
     assert partial["failed_count"] == 1
+    assert partial["expected_count"] == 2
     assert sum(row["data_quality"] == "confirmed" for row in partial_rows) == 1
 
     monkeypatch.setattr(refresh, "try_live_price", lambda row, offline: (777.0, "parsed"))
@@ -615,6 +622,7 @@ def test_refresh_outcomes_classify_zero_partial_and_complete_current_evidence(mo
     assert complete["attempted_at_utc"] == "2026-07-11T12:00:00Z"
     assert complete["confirmed_count"] == 2
     assert complete["failed_count"] == 0
+    assert complete["expected_count"] == 2
     assert all(row["retrieved"] == complete["attempted_at_utc"] for row in complete_rows)
 
 
@@ -643,6 +651,10 @@ def test_stale_http_cache_is_never_promoted_to_current_confirmation(monkeypatch)
     [
         "https://kegco.com/search?q=K309B-1",
         "https://www.homedepot.com/s/K309B-1",
+        "https://kegco.com/search-results/K309B-1",
+        "https://kegco.com/browse/K309B-1",
+        "https://kegco.com/searching/K309B-1",
+        "https://kegco.com/categories/K309B-1",
     ],
 )
 def test_search_and_query_sources_are_non_confirming_without_fetch(source_url, monkeypatch):
@@ -661,32 +673,170 @@ def test_search_and_query_sources_are_non_confirming_without_fetch(source_url, m
     assert evidence == "search_url_skipped"
 
 
-def test_direct_page_must_contain_expected_model_before_price_can_confirm(monkeypatch):
+def test_direct_page_requires_matched_structured_product_offer(monkeypatch):
     from scripts import refresh
 
     row = listing_fixture("K309B-1", 800)
     row["source_url"] = "https://kegco.com/products/k309b-1"
-    monkeypatch.setattr(refresh, "fetch_url", lambda url, use_cache=False: "<title>Unrelated appliance</title>$123.45")
-    assert refresh.try_live_price(row, offline=False) == (None, "identity_mismatch")
-
     monkeypatch.setattr(
         refresh,
         "fetch_url",
-        lambda url, use_cache=False: "<title>Kegco K309B-1 kegerator</title>$843.99 $999.99",
+        lambda url, use_cache=False: ("<title>K309B-1</title>$123.45", url),
+    )
+    assert refresh.try_live_price(row, offline=False) == (None, "structured_product_missing")
+
+    product = {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "model": "K309B-1",
+        "offers": {"@type": "Offer", "price": "843.99", "priceCurrency": "USD"},
+    }
+    monkeypatch.setattr(
+        refresh,
+        "fetch_url",
+        lambda url, use_cache=False: (jsonld_page(product), url),
     )
     assert refresh.try_live_price(row, offline=False) == (843.99, "parsed")
 
 
-def test_direct_page_uses_model_bound_price_not_unrelated_page_minimum(monkeypatch):
+def test_structured_price_stays_bound_to_matched_product_own_offer(monkeypatch):
     from scripts import refresh
 
     row = listing_fixture("K309B-1", 800)
     row["source_url"] = "https://kegco.com/products/k309b-1"
-    unrelated = "<aside>Other appliance $123.45</aside>" + ("x" * 2000)
-    product = "<main><h1>Kegco K309B-1</h1><p>Sale $843.99</p><p>List $999.99</p></main>"
-    monkeypatch.setattr(refresh, "fetch_url", lambda url, use_cache=False: unrelated + product)
+    accessory = {
+        "@type": "Product",
+        "name": "Accessory tray",
+        "offers": {"@type": "Offer", "price": "199", "priceCurrency": "USD"},
+    }
+    outside_offer = {"@type": "Offer", "price": "149", "priceCurrency": "USD"}
+    matched = {
+        "@type": "Product",
+        "name": "Kegco K309B-1 complete kegerator",
+        "offers": {"@type": "Offer", "price": "843.99", "priceCurrency": "USD"},
+    }
+    page = "$99.99 unrelated text" + jsonld_page(accessory, outside_offer, matched)
+    monkeypatch.setattr(refresh, "fetch_url", lambda url, use_cache=False: (page, url))
 
     assert refresh.try_live_price(row, offline=False) == (843.99, "parsed")
+
+
+@pytest.mark.parametrize(
+    ("expected", "candidate"),
+    [
+        ("KC2000", "KC2000TWIN"),
+        ("K309B-1", "K309B-10"),
+        ("K309B-1", "XXK309B-1YY"),
+    ],
+)
+def test_structured_product_identity_match_is_alphanumeric_bounded(expected, candidate):
+    from scripts.refresh import parse_structured_product_price
+
+    product = {
+        "@type": "Product",
+        "model": candidate,
+        "offers": {"@type": "Offer", "price": "843.99", "priceCurrency": "USD"},
+    }
+
+    assert parse_structured_product_price(jsonld_page(product), expected) is None
+
+
+@pytest.mark.parametrize("identity_field", ["model", "mpn", "sku", "productID", "name"])
+def test_structured_product_accepts_exact_identity_fields_and_own_usd_offer(identity_field):
+    from scripts.refresh import parse_structured_product_price
+
+    product = {
+        "@type": ["Thing", "Product"],
+        identity_field: "Kegco K309B-1 complete kegerator" if identity_field == "name" else "K309B-1",
+        "offers": {"@type": "Offer", "price": "843.99", "priceCurrency": "USD"},
+    }
+
+    assert parse_structured_product_price(jsonld_page(product), "K309B-1") == 843.99
+
+
+def test_structured_product_supports_aggregate_low_price_but_requires_usd_and_finite_positive():
+    from scripts.refresh import parse_structured_product_price
+
+    def product(offer):
+        return {"@type": "Product", "sku": "K309B-1", "offers": offer}
+
+    assert parse_structured_product_price(
+        jsonld_page(product({"@type": "AggregateOffer", "lowPrice": "799.99", "priceCurrency": "USD"})),
+        "K309B-1",
+    ) == 799.99
+    for offer in (
+        {"@type": "Offer", "price": "799.99", "priceCurrency": "EUR"},
+        {"@type": "Offer", "price": "799.99"},
+        {"@type": "Offer", "price": "NaN", "priceCurrency": "USD"},
+        {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+    ):
+        assert parse_structured_product_price(jsonld_page(product(offer)), "K309B-1") is None
+
+
+class FakeHttpResponse:
+    def __init__(self, body: str, final_url: str):
+        self._body = body.encode("utf-8")
+        self._final_url = final_url
+
+    def read(self):
+        return self._body
+
+    def geturl(self):
+        return self._final_url
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+
+@pytest.mark.parametrize(
+    "final_url",
+    [
+        "https://www.kegco.com/products/k309b-1",
+        "https://kegco.com/products/k309b-1?source=search",
+        "https://kegco.com/products/k309b-1?",
+        "https://kegco.com/products/k309b-1#",
+        "https://kegco.com/search-results/k309b-1",
+        "https://kegco.com/se%61rch/k309b-1",
+        "https://kegco.com/browse/k309b-1",
+        "https://kegco.com/searching/k309b-1",
+        "https://kegco.com/category/kegerators/k309b-1",
+        "https://kegco.com/catalog/k309b-1",
+    ],
+)
+def test_fetch_url_rejects_redirect_host_query_and_search_browse_category_paths(final_url, tmp_path, monkeypatch):
+    from scripts import refresh
+
+    requested = "https://kegco.com/products/k309b-1"
+    monkeypatch.setattr(refresh, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(refresh, "robots_allowed", lambda url: True)
+    monkeypatch.setattr(refresh.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        refresh.urllib.request,
+        "urlopen",
+        lambda request, timeout: FakeHttpResponse("safe body", final_url),
+    )
+
+    assert refresh.fetch_url(requested, use_cache=False) is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_fetch_url_returns_body_and_validated_final_direct_url(tmp_path, monkeypatch):
+    from scripts import refresh
+
+    requested = "https://kegco.com/products/k309b-1"
+    monkeypatch.setattr(refresh, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(refresh, "robots_allowed", lambda url: True)
+    monkeypatch.setattr(refresh.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        refresh.urllib.request,
+        "urlopen",
+        lambda request, timeout: FakeHttpResponse("safe body", requested),
+    )
+
+    assert refresh.fetch_url(requested, use_cache=False) == ("safe body", requested)
 
 
 @pytest.mark.parametrize("attempt_status", ["blocked", "partial", "failed"])
@@ -700,6 +850,7 @@ def test_unsuccessful_attempt_preserves_entire_snapshot_and_changes_attempt_only
         "status": attempt_status,
         "reason": f"{attempt_status} source evidence",
         "attempted_at_utc": "2026-07-11T12:00:00Z",
+        "expected_count": 2,
         "confirmed_count": 0 if attempt_status != "partial" else 1,
         "failed_count": 2 if attempt_status != "partial" else 1,
     }
@@ -735,6 +886,7 @@ def test_only_complete_success_replaces_snapshot_and_advances_success_time():
         "status": "success",
         "reason": "2 of 2 targets confirmed from current evidence.",
         "attempted_at_utc": attempted_at,
+        "expected_count": 2,
         "confirmed_count": 2,
         "failed_count": 0,
     }
@@ -769,6 +921,7 @@ def test_complete_success_accepts_reordered_exact_stable_identity_set():
         "status": "success",
         "reason": "2 of 2 targets confirmed from current evidence.",
         "attempted_at_utc": attempted_at,
+        "expected_count": 2,
         "confirmed_count": 2,
         "failed_count": 0,
     }
@@ -805,6 +958,7 @@ def test_complete_success_rejects_duplicate_missing_or_substituted_target_identi
         "status": "success",
         "reason": "2 of 2 targets confirmed from current evidence.",
         "attempted_at_utc": attempted_at,
+        "expected_count": 2,
         "confirmed_count": 2,
         "failed_count": 0,
     }
@@ -842,6 +996,7 @@ def test_complete_success_rejects_non_finite_or_non_positive_prices(field, value
         "status": "success",
         "reason": "2 of 2 targets confirmed from current evidence.",
         "attempted_at_utc": attempted_at,
+        "expected_count": 2,
         "confirmed_count": 2,
         "failed_count": 0,
     }
@@ -878,6 +1033,7 @@ def test_refresh_outcome_counts_fail_closed_by_status(outcome_status, confirmed,
         "status": outcome_status,
         "reason": "test outcome",
         "attempted_at_utc": attempted_at,
+        "expected_count": 2,
         "confirmed_count": confirmed,
         "failed_count": failed,
     }
@@ -900,6 +1056,7 @@ def test_apply_refresh_requires_positive_consistent_expected_count_and_unique_pr
         "status": "blocked",
         "reason": "no evidence",
         "attempted_at_utc": attempted_at,
+        "expected_count": 2,
         "confirmed_count": 0,
         "failed_count": 2,
     }
@@ -924,6 +1081,21 @@ def test_apply_refresh_requires_positive_consistent_expected_count_and_unique_pr
             now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
         )
 
+    for invalid_expected_count in (None, 0, 3, "2"):
+        invalid = copy.deepcopy(outcome)
+        if invalid_expected_count is None:
+            invalid.pop("expected_count")
+        else:
+            invalid["expected_count"] = invalid_expected_count
+        with pytest.raises(ValueError, match="expected_count"):
+            apply_refresh_outcome(
+                [listing_fixture("ONE", 800), listing_fixture("TWO", 900)],
+                refresh_fixture(),
+                [],
+                invalid,
+                now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+            )
+
 
 @pytest.mark.parametrize(
     ("attempted_at", "now", "message"),
@@ -939,6 +1111,7 @@ def test_attempts_reject_older_and_future_evidence(attempted_at, now, message):
         "status": "blocked",
         "reason": "no current evidence",
         "attempted_at_utc": attempted_at,
+        "expected_count": 2,
         "confirmed_count": 0,
         "failed_count": 2,
     }
@@ -973,6 +1146,7 @@ def test_run_refresh_persists_only_attempt_metadata_when_blocked(tmp_path, monke
         "status": "blocked",
         "reason": "0 of 2 targets were confirmed.",
         "attempted_at_utc": attempted_at,
+        "expected_count": 2,
         "confirmed_count": 0,
         "failed_count": 2,
     }
@@ -1020,6 +1194,7 @@ def test_run_refresh_writes_snapshot_and_exact_attempt_history_only_on_success(t
         "status": "success",
         "reason": "2 of 2 targets confirmed from current evidence.",
         "attempted_at_utc": attempted_at,
+        "expected_count": 2,
         "confirmed_count": 2,
         "failed_count": 0,
     }

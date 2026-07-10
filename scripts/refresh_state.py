@@ -297,6 +297,15 @@ def apply_refresh_outcome(
         raise ValueError("refresh requires a positive expected_count")
     if status["row_count"] != expected_count or len(prior_listings) != expected_count:
         raise ValueError("source_count, row_count, and prior listings must match expected_count")
+    outcome_expected_count = outcome.get("expected_count")
+    if (
+        not isinstance(outcome_expected_count, int)
+        or isinstance(outcome_expected_count, bool)
+        or outcome_expected_count <= 0
+    ):
+        raise ValueError("refresh outcome requires a positive integer expected_count")
+    if outcome_expected_count != expected_count:
+        raise ValueError("refresh outcome expected_count must equal durable source_count")
     prior_identities = _stable_identity_set(prior_listings, "prior")
     confirmed = outcome.get("confirmed_count")
     failed = outcome.get("failed_count")

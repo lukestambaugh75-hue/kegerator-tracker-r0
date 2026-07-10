@@ -6,8 +6,8 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
-import html as html_lib
 import json
+import math
 import os
 import re
 import tempfile
@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 import urllib.robotparser
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -35,7 +36,6 @@ CACHE_DIR = ROOT / ".cache" / "http"
 HISTORY_FIELDS = ["date", "brand", "model", "retailer", "price", "list_price", "source", "data_quality"]
 USER_AGENT = "LukeKegeratorTracker/1.0 (+https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/)"
 MIN_REQUEST_SECONDS = 3.1
-PRICE_RE = re.compile(r"\$\s*([0-9][0-9,]*(?:\.[0-9]{2})?)")
 CENTRAL_ZONE = ZoneInfo("America/Chicago")
 
 
@@ -146,88 +146,185 @@ def cache_path_for(url: str) -> Path:
     return CACHE_DIR / f"{digest}.html"
 
 
-def fetch_url(url: str, use_cache: bool = True) -> str | None:
-    if not url.startswith("https://"):
+def _path_has_discovery_segment(path: str) -> bool:
+    segments = [urllib.parse.unquote(segment).casefold() for segment in path.split("/") if segment]
+    if not segments:
+        return True
+    for segment in segments:
+        if segment in {"s", "c"} or segment.startswith(
+            ("search", "brows", "categor", "catalog", "collection")
+        ):
+            return True
+    return segments[-1] in {"product", "products", "item", "items", "p"}
+
+
+def source_is_direct_product_page(url: str) -> bool:
+    raw_url = str(url or "")
+    parsed = urllib.parse.urlsplit(raw_url)
+    return bool(
+        parsed.scheme == "https"
+        and parsed.netloc
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+        and "?" not in raw_url
+        and "#" not in raw_url
+        and not _path_has_discovery_segment(parsed.path)
+    )
+
+
+def validate_final_response_url(requested_url: str, final_url: str) -> str:
+    """Require the final response to remain on the exact direct-product host/path class."""
+    requested = urllib.parse.urlsplit(str(requested_url or ""))
+    final = urllib.parse.urlsplit(str(final_url or ""))
+    if not source_is_direct_product_page(requested_url):
+        raise ValueError("requested URL is not a direct product path")
+    if not source_is_direct_product_page(final_url):
+        raise ValueError("final response URL is not a direct product path")
+    if final.netloc.casefold() != requested.netloc.casefold():
+        raise ValueError("final response URL changed host")
+    return final.geturl()
+
+
+def fetch_url(url: str, use_cache: bool = False) -> tuple[str, str] | None:
+    if not source_is_direct_product_page(url):
+        return None
+    # Cached bodies are diagnostic only and can never be current evidence.
+    if use_cache:
         return None
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path = cache_path_for(url)
-    if use_cache and cache_path.exists():
-        return cache_path.read_text(encoding="utf-8", errors="ignore")
     if not robots_allowed(url):
         return None
     time.sleep(MIN_REQUEST_SECONDS)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"})
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
+            final_url = validate_final_response_url(url, response.geturl())
             body = response.read().decode("utf-8", errors="ignore")
-    except (urllib.error.URLError, TimeoutError):
+    except (AttributeError, TypeError, ValueError, urllib.error.URLError, TimeoutError):
         return None
     cache_path.write_text(body, encoding="utf-8")
-    return body
+    return body, final_url
 
 
-def parse_price(html: str | None) -> float | None:
-    if not html:
-        return None
-    candidates = []
-    for match in PRICE_RE.finditer(html[:500000]):
-        value = match.group(1).replace(",", "")
-        try:
-            amount = float(value)
-        except ValueError:
-            continue
-        if 100 <= amount <= 5000:
-            candidates.append(amount)
-    return min(candidates) if candidates else None
+class _JsonLdScripts(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.documents: list[str] = []
+        self._parts: list[str] | None = None
+
+    def handle_starttag(self, tag, attrs) -> None:
+        if tag.casefold() != "script":
+            return
+        attributes = {str(name).casefold(): str(value or "") for name, value in attrs}
+        media_type = attributes.get("type", "").split(";", 1)[0].strip().casefold()
+        self._parts = [] if media_type == "application/ld+json" else None
+
+    def handle_data(self, data: str) -> None:
+        if self._parts is not None:
+            self._parts.append(data)
+
+    def handle_endtag(self, tag) -> None:
+        if tag.casefold() == "script" and self._parts is not None:
+            self.documents.append("".join(self._parts))
+            self._parts = None
 
 
-def page_contains_model_identity(page_html: str | None, model: object) -> bool:
-    """Require the expected model identity before accepting a page price."""
-    return bool(_model_identity_spans(page_html, model))
+def _schema_types(node: dict) -> set[str]:
+    raw = node.get("@type")
+    values = raw if isinstance(raw, list) else [raw]
+    return {
+        str(value).rstrip("/").rsplit("/", 1)[-1].rsplit("#", 1)[-1].casefold()
+        for value in values
+        if isinstance(value, str)
+    }
 
 
-def _model_identity_spans(page_html: str | None, model: object) -> list[tuple[int, int]]:
-    if not page_html:
-        return []
-    parts = re.findall(r"[a-z0-9]+", str(model or "").casefold())
+def _iter_product_nodes(value):
+    if isinstance(value, list):
+        for item in value:
+            yield from _iter_product_nodes(item)
+        return
+    if not isinstance(value, dict):
+        return
+    if "product" in _schema_types(value):
+        yield value
+    for child in value.values():
+        if isinstance(child, (dict, list)):
+            yield from _iter_product_nodes(child)
+
+
+def _identity_matches(value: object, expected_model: object) -> bool:
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return False
+    parts = re.findall(r"[a-z0-9]+", str(expected_model or "").casefold())
     if not parts:
-        return []
-    pattern = r"[^a-z0-9]*".join(re.escape(part) for part in parts)
-    decoded = html_lib.unescape(page_html)
-    return [match.span() for match in re.finditer(pattern, decoded, flags=re.IGNORECASE)]
+        return False
+    pattern = r"(?<![a-z0-9])" + r"[^a-z0-9]*".join(
+        re.escape(part) for part in parts
+    ) + r"(?![a-z0-9])"
+    return re.search(pattern, str(value), flags=re.IGNORECASE) is not None
 
 
-def parse_model_bound_price(page_html: str | None, model: object) -> float | None:
-    """Choose the valid price nearest an exact model occurrence, never a page-wide minimum."""
+def _finite_positive_price(value: object) -> float | None:
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip().replace(",", "")
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", cleaned):
+            return None
+        value = cleaned
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    return amount if math.isfinite(amount) and amount > 0 else None
+
+
+def _own_usd_offer_prices(product: dict) -> list[float]:
+    raw_offers = product.get("offers")
+    offers = raw_offers if isinstance(raw_offers, list) else [raw_offers]
+    prices: list[float] = []
+    for offer in offers:
+        if not isinstance(offer, dict):
+            continue
+        if not (_schema_types(offer) & {"offer", "aggregateoffer"}):
+            continue
+        if str(offer.get("priceCurrency") or "").strip().upper() != "USD":
+            continue
+        for field in ("price", "lowPrice"):
+            amount = _finite_positive_price(offer.get(field))
+            if amount is not None:
+                prices.append(amount)
+    return prices
+
+
+def parse_structured_product_price(page_html: str | None, expected_model: object) -> float | None:
+    """Read USD price only from the matched JSON-LD Product's own offers."""
     if not page_html:
         return None
-    decoded = html_lib.unescape(page_html)
-    spans = _model_identity_spans(decoded, model)
-    candidates: list[tuple[int, int, float]] = []
-    for model_start, model_end in spans:
-        window_start = max(0, model_start - 1200)
-        window_end = min(len(decoded), model_end + 1200)
-        for match in PRICE_RE.finditer(decoded, window_start, window_end):
-            try:
-                amount = float(match.group(1).replace(",", ""))
-            except ValueError:
+    parser = _JsonLdScripts()
+    try:
+        parser.feed(page_html)
+        parser.close()
+    except Exception:
+        return None
+    candidates: list[float] = []
+    for document in parser.documents:
+        try:
+            value = json.loads(document)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        for product in _iter_product_nodes(value):
+            if not any(
+                _identity_matches(product.get(field), expected_model)
+                for field in ("model", "mpn", "sku", "productID", "name")
+            ):
                 continue
-            if not 100 <= amount <= 5000:
-                continue
-            if match.end() <= model_start:
-                distance = model_start - match.end()
-            elif match.start() >= model_end:
-                distance = match.start() - model_end
-            else:
-                distance = 0
-            candidates.append((distance, match.start(), amount))
-    return min(candidates)[2] if candidates else None
-
-
-def source_is_direct_product_page(url: str) -> bool:
-    parsed = urllib.parse.urlparse(url)
-    segments = [segment.casefold() for segment in parsed.path.split("/") if segment]
-    return not parsed.query and not any(segment in {"s", "search"} for segment in segments)
+            candidates.extend(_own_usd_offer_prices(product))
+    return min(candidates) if candidates else None
 
 
 def try_live_price(row: dict, offline: bool) -> tuple[float | None, str]:
@@ -238,11 +335,16 @@ def try_live_price(row: dict, offline: bool) -> tuple[float | None, str]:
         return None, "search_url_skipped"
     # A cache can help humans diagnose source changes, but it is never current
     # confirmation for a scheduled data attempt.
-    html = fetch_url(url, use_cache=False)
-    if html and not page_contains_model_identity(html, row.get("model")):
-        return None, "identity_mismatch"
-    amount = parse_model_bound_price(html, row.get("model"))
-    return amount, "parsed" if amount is not None else "blocked_or_no_price"
+    fetched = fetch_url(url, use_cache=False)
+    if fetched is None:
+        return None, "blocked_or_no_price"
+    page_html, final_url = fetched
+    try:
+        validate_final_response_url(url, final_url)
+    except ValueError:
+        return None, "redirect_rejected"
+    amount = parse_structured_product_price(page_html, row.get("model"))
+    return amount, "parsed" if amount is not None else "structured_product_missing"
 
 
 def refresh_listings(
@@ -289,6 +391,7 @@ def refresh_listings(
         "status": outcome_status,
         "reason": reason,
         "attempted_at_utc": retrieved,
+        "expected_count": len(refreshed),
         "confirmed_count": confirmed_count,
         "failed_count": failed_count,
     }
@@ -379,6 +482,7 @@ def run_refresh(
             "status": "failed",
             "reason": f"Acquisition failed: {type(exc).__name__}: {exc}",
             "attempted_at_utc": iso_z(now),
+            "expected_count": len(listings),
             "confirmed_count": 0,
             "failed_count": len(listings),
         }

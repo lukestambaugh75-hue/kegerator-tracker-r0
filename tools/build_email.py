@@ -5,14 +5,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.audience_guard import (  # noqa: E402
+    CANONICAL_DASHBOARD_URL,
+    EXPECTED_RECIPIENTS,
+    listing_source_urls,
+    validate_email_payload,
+)
+
+
 LISTINGS_PATH = ROOT / "data" / "listings.json"
 SPECS_PATH = ROOT / "data" / "specs.json"
-DEFAULT_DASHBOARD_URL = "https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/"
-RECIPIENTS = ["lukestambaugh75@gmail.com", "devin.mullen89@gmail.com"]
+DEFAULT_DASHBOARD_URL = CANONICAL_DASHBOARD_URL
+RECIPIENTS = list(EXPECTED_RECIPIENTS)
 
 
 def money(value) -> str:
@@ -67,7 +79,7 @@ def build_payload(listings: list[dict], specs: list[dict], dashboard_url: str = 
         f"<p>Dashboard: <a href='{dashboard_url}'>{dashboard_url}</a></p>",
         "<p style='color:#666;font-size:12px'>Confirm final cart total, delivery timing, seller identity, and current stock before buying.</p>",
     ]
-    return {
+    payload = {
         "to": list(RECIPIENTS),
         "cc": [],
         "bcc": [],
@@ -76,6 +88,8 @@ def build_payload(listings: list[dict], specs: list[dict], dashboard_url: str = 
         "body_html": "\n".join(html_lines),
         "dashboard_url": dashboard_url,
     }
+    validate_email_payload(payload, listing_source_urls(listings))
+    return payload
 
 
 def main() -> None:

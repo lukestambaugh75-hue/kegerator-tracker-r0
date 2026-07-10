@@ -18,7 +18,6 @@
       --good: #8de67d;
       --amber: #ffc66d;
       --red: #ff8b8b;
-      --nav: rgba(12, 17, 18, .78);
     }
     * { box-sizing: border-box; }
     body {
@@ -49,33 +48,6 @@
       border-bottom: 1px solid var(--line);
     }
     .hero-content { padding: 28px 0 38px; max-width: 930px; }
-    .tracker-nav {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      width: fit-content;
-      max-width: 100%;
-      padding: 8px;
-      background: var(--nav);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      backdrop-filter: blur(10px);
-    }
-    .tracker-nav span, .tracker-nav a {
-      display: inline-flex;
-      align-items: center;
-      min-height: 30px;
-      padding: 4px 10px;
-      border-radius: 6px;
-      color: var(--muted);
-      text-decoration: none;
-      font-size: .82rem;
-      font-weight: 800;
-      white-space: nowrap;
-    }
-    .tracker-nav span { color: #102026; background: var(--cold); }
-    .tracker-nav a { border: 1px solid rgba(255,255,255,.08); }
-    .tracker-nav a.home-link { color: #102026; background: var(--cold); border-color: var(--cold); }
     h1 { font-size: clamp(2.4rem, 7vw, 5.3rem); line-height: .95; margin: 20px 0 18px; letter-spacing: 0; overflow-wrap: anywhere; }
     h2 { font-size: 1.48rem; margin: 0 0 14px; }
     h3 { font-size: 1.08rem; margin: 0 0 8px; }
@@ -161,14 +133,6 @@
       }
       .wrap.hero-content { width: calc(100% - 32px); max-width: calc(100% - 32px); margin: 0 auto; }
       .hero-content { padding: 28px 0 24px; }
-      .tracker-nav { display: grid; grid-template-columns: 1fr; width: 100%; }
-      .tracker-nav span, .tracker-nav a {
-        justify-content: center;
-        min-width: 0;
-        min-height: 36px;
-        white-space: normal;
-        text-align: center;
-      }
       h1 { font-size: clamp(2.2rem, 11vw, 3.2rem); line-height: 1; word-break: break-word; }
       h1 .title-break { display: block; }
       .lead { max-width: 100%; font-size: 1rem; }
@@ -184,13 +148,6 @@
 <body>
   <header class="hero">
     <div class="wrap hero-content">
-      <nav class="tracker-nav" aria-label="Deal Trackers">
-        <a class="home-link" href="https://lukestambaugh75-hue.github.io/daily-dashboards-public-safe-r0/">Main Dashboard</a>
-        <span>Deal Trackers</span>
-        <a href="https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/">Kegerators</a>
-        <a href="https://lukestambaugh75-hue.github.io/ps5-tv-deal-tracker-r0/">PS5 + TV</a>
-        <a href="https://lukestambaugh75-hue.github.io/ford-raptor-tracker-r0/">Raptor</a>
-      </nav>
       <p class="eyebrow">Hot Houston garage price tracker</p>
       <h1>Kegerator <span class="title-break">Tracker</span></h1>
       <p class="lead" id="heroLead">Loading current kegerator prices, garage heat suitability, and retailer spread.</p>
@@ -283,12 +240,6 @@
 
   <script>
     const state = { listings: [], specs: [], history: [], range: "all" };
-    const urls = {
-      listings: "data/listings.json",
-      specs: "data/specs.json",
-      history: "history.csv"
-    };
-
     const fmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
     const money = value => value === null || value === undefined || value === "" ? "not shown" : fmt.format(Number(value)).replace(".00", "");
     const uniq = values => [...new Set(values.filter(value => value !== null && value !== undefined && value !== ""))].sort();
@@ -322,9 +273,9 @@
 
     async function loadData() {
       const [listings, specs, historyText] = await Promise.all([
-        fetch(urls.listings).then(r => r.json()),
-        fetch(urls.specs).then(r => r.json()),
-        fetch(urls.history).then(r => r.text())
+        fetch("data/listings.json").then(r => r.json()),
+        fetch("data/specs.json").then(r => r.json()),
+        fetch("history.csv").then(r => r.text())
       ]);
       state.listings = listings;
       state.specs = specs;

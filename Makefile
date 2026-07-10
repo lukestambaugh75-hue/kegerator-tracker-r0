@@ -1,7 +1,7 @@
 PY := /usr/bin/python3
 PORT ?= 8767
 
-.PHONY: refresh json test verify email-content open serve pages-check
+.PHONY: refresh json test audience verify email-content open serve pages-check
 
 refresh:
 	$(PY) scripts/refresh.py
@@ -13,8 +13,10 @@ json:
 test:
 	$(PY) -m pytest -q
 
-verify: refresh json test
-	$(PY) tools/build_email.py --output-dir out
+audience: email-content
+	$(PY) scripts/audience_guard.py
+
+verify: refresh json test audience
 	git diff --check
 
 email-content:

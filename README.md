@@ -2,6 +2,8 @@
 
 Public live dashboard for kegerator prices, with Houston garage heat suitability treated as a first-class buying signal.
 
+This is a direct-link-only Luke + Devin dashboard. It intentionally has no shared-dashboard, PS5/TV, Ford/Raptor, or other cross-repository navigation or runtime assets.
+
 Dashboard URL:
 
 https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/
@@ -18,6 +20,7 @@ https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/
 - `data/specs.json` - reference specs including cooling range, fan-forced cooling, outdoor rating, and computed garage suitability.
 - `history.csv` - append-only ledger with `date,brand,model,retailer,price,list_price,source,data_quality`.
 - `scripts/refresh.py` - normalizes data, attempts polite cached source checks, rewrites listings/specs, and appends new history rows.
+- `scripts/audience_guard.py` - fail-closed check for the standalone link graph, exact current listing sources, local runtime files, and Luke + Devin recipient boundary.
 - `.github/workflows/refresh.yml` - daily 11:00 UTC refresh with manual dispatch.
 - `tools/build_email.py` - creates a reviewable email payload for Luke and Devin only.
 - `automation/kegerator-tracker-email.toml` - repo mirror of the Codex email automation run contract.
@@ -27,10 +30,12 @@ https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/
 ```bash
 make refresh
 make verify
+make audience
+make pages-check
 make open
 ```
 
-`make verify` runs the refresh, JSON validation, pytest, email payload generation, and whitespace checks.
+`make verify` runs the refresh, JSON validation, pytest, email payload generation, audience guard, and whitespace checks. `make audience` is the local boundary check; `make pages-check` applies the same boundary to the deployed page and its current listing data.
 
 ## Data Quality
 
@@ -44,7 +49,7 @@ Add a spec row to `data/specs.json`. Add one or more retailer observation rows t
 
 ## GitHub Pages
 
-Pages should serve from the `main` branch root. `index.html` fetches `data/listings.json`, `data/specs.json`, and `history.csv` at load, so the dashboard reflects the latest committed data without a rebuild.
+Pages should serve from the `main` branch root. `index.html` fetches `data/listings.json`, `data/specs.json`, and `history.csv` at load, so the dashboard reflects the latest committed data without a rebuild. Share this page by its direct URL; do not place it in a shared dashboard navigation or load assets from another repository.
 
 ## Email
 
@@ -53,6 +58,6 @@ Generated email payloads are addressed exactly to:
 - `lukestambaugh75@gmail.com`
 - `devin.mullen89@gmail.com`
 
-No CC/BCC. This repo generates `out/latest-email.json`; sending uses the approved signed-in Chrome/Gmail browser route so it does not depend on the Gmail connector OAuth scope. Before sending, verify the two recipient chips, no CC/BCC, subject, body, and dashboard link.
+No CC/BCC. This repo generates `out/latest-email.json`; the builder refuses any alternate dashboard URL or recipient set. Sending uses the approved signed-in Chrome/Gmail browser route so it does not depend on the Gmail connector OAuth scope. Before sending, verify the two recipient chips, no CC/BCC, subject, body, dashboard link, and a passing audience guard.
 
 The automation mirror lives at `automation/kegerator-tracker-email.toml`. It is marked `READY_TO_REGISTER` because Codex.app scheduled jobs are registered in the app UI, not from this repo.

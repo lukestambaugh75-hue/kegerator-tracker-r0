@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import hashlib
 import json
 import os
 import re
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -15,17 +17,25 @@ import urllib.request
 import urllib.robotparser
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+try:
+    from .refresh_state import apply_refresh_outcome, parse_utc, utc_iso
+except ImportError:
+    from refresh_state import apply_refresh_outcome, parse_utc, utc_iso
 
 
 ROOT = Path(__file__).resolve().parents[1]
 LISTINGS_PATH = ROOT / "data" / "listings.json"
 SPECS_PATH = ROOT / "data" / "specs.json"
 HISTORY_PATH = ROOT / "history.csv"
+STATUS_PATH = ROOT / "data" / "refresh-status.json"
 CACHE_DIR = ROOT / ".cache" / "http"
 HISTORY_FIELDS = ["date", "brand", "model", "retailer", "price", "list_price", "source", "data_quality"]
 USER_AGENT = "LukeKegeratorTracker/1.0 (+https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/)"
 MIN_REQUEST_SECONDS = 3.1
 PRICE_RE = re.compile(r"\$\s*([0-9][0-9,]*(?:\.[0-9]{2})?)")
+CENTRAL_ZONE = ZoneInfo("America/Chicago")
 
 
 def utc_now() -> datetime:
@@ -46,7 +56,22 @@ def load_json(path: Path):
 
 
 def write_json(path: Path, data) -> None:
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def spec_key(brand: str, model: str) -> str:
@@ -162,16 +187,24 @@ def try_live_price(row: dict, offline: bool) -> tuple[float | None, str]:
     parsed = urllib.parse.urlparse(url)
     if parsed.query or parsed.path.rstrip("/").endswith("/s"):
         return None, "search_url_skipped"
-    html = fetch_url(url)
+    # A cache can help humans diagnose source changes, but it is never current
+    # confirmation for a scheduled data attempt.
+    html = fetch_url(url, use_cache=False)
     amount = parse_price(html)
     return amount, "parsed" if amount is not None else "blocked_or_no_price"
 
 
-def refresh_listings(listings: list[dict], specs: list[dict], now: datetime | None = None, offline: bool = False) -> list[dict]:
+def refresh_listings(
+    listings: list[dict],
+    specs: list[dict],
+    now: datetime | None = None,
+    offline: bool = False,
+) -> tuple[list[dict], dict]:
     now = now or utc_now()
     retrieved = iso_z(now)
     specs_by_key = {spec_key(row["brand"], row["model"]): row for row in specs}
     refreshed = []
+    confirmed_count = 0
     for raw in listings:
         row = normalize_listing(raw, specs_by_key, raw.get("retrieved"))
         live_price, status = try_live_price(row, offline=offline)
@@ -179,14 +212,35 @@ def refresh_listings(listings: list[dict], specs: list[dict], now: datetime | No
             row["current_price"] = live_price
             row["data_quality"] = "confirmed"
             row["retrieved"] = retrieved
-        elif status != "offline" and row.get("current_price") is not None:
-            same_day_seed = str(row.get("retrieved") or "").startswith(today_utc(now))
-            if not (same_day_seed and row.get("data_quality") == "confirmed"):
-                row["data_quality"] = "estimated" if row.get("data_quality") != "snapshot_varies" else "snapshot_varies"
+            confirmed_count += 1
+        else:
+            row["data_quality"] = "blocked"
         row = normalize_listing(row, specs_by_key, row.get("retrieved"))
         refreshed.append(row)
     refreshed.sort(key=lambda item: (item["brand"].lower(), item["model"].lower(), item["retailer"].lower()))
-    return refreshed
+    failed_count = len(refreshed) - confirmed_count
+    if confirmed_count == len(refreshed) and refreshed:
+        outcome_status = "success"
+        reason = f"{confirmed_count} of {len(refreshed)} targets confirmed from current evidence."
+    elif confirmed_count == 0:
+        outcome_status = "blocked"
+        reason = (
+            f"0 of {len(refreshed)} targets were confirmed; source checks were blocked "
+            "or did not return a current price."
+        )
+    else:
+        outcome_status = "partial"
+        reason = (
+            f"{confirmed_count} of {len(refreshed)} targets were confirmed; "
+            f"{failed_count} did not return current evidence."
+        )
+    return refreshed, {
+        "status": outcome_status,
+        "reason": reason,
+        "attempted_at_utc": retrieved,
+        "confirmed_count": confirmed_count,
+        "failed_count": failed_count,
+    }
 
 
 def history_key(row: dict) -> tuple[str, str, str, str]:
@@ -201,8 +255,15 @@ def format_amount(value) -> str:
     return text.rstrip("0").rstrip(".")
 
 
-def append_history(listings: list[dict], path: Path = HISTORY_PATH, today: str | None = None) -> int:
-    today = today or today_utc()
+def append_history(
+    listings: list[dict],
+    path: Path = HISTORY_PATH,
+    attempted_at: str | datetime | None = None,
+) -> int:
+    attempt = parse_utc(attempted_at or utc_now())
+    assert attempt is not None
+    attempt_iso = utc_iso(attempt)
+    today = attempt.astimezone(CENTRAL_ZONE).date().isoformat()
     existing = set()
     if path.exists():
         with path.open(newline="", encoding="utf-8") as f:
@@ -213,6 +274,14 @@ def append_history(listings: list[dict], path: Path = HISTORY_PATH, today: str |
 
     rows_to_append = []
     for item in listings:
+        if item.get("data_quality") != "confirmed":
+            continue
+        try:
+            retrieved = utc_iso(item.get("retrieved"))
+        except ValueError:
+            continue
+        if retrieved != attempt_iso:
+            continue
         if item.get("current_price") in (None, ""):
             continue
         row = {
@@ -237,16 +306,64 @@ def append_history(listings: list[dict], path: Path = HISTORY_PATH, today: str |
     return len(rows_to_append)
 
 
+def run_refresh(
+    *,
+    listings_path: Path = LISTINGS_PATH,
+    specs_path: Path = SPECS_PATH,
+    status_path: Path = STATUS_PATH,
+    history_path: Path = HISTORY_PATH,
+    now: datetime | None = None,
+    offline: bool = False,
+) -> dict:
+    """Execute one attempt and persist truth according to its outcome."""
+    now = now or utc_now()
+    listings = load_json(Path(listings_path))
+    specs = normalize_specs(load_json(Path(specs_path)))
+    status = load_json(Path(status_path))
+    try:
+        candidate, outcome = refresh_listings(listings, specs, now=now, offline=offline)
+    except Exception as exc:
+        candidate = []
+        outcome = {
+            "status": "failed",
+            "reason": f"Acquisition failed: {type(exc).__name__}: {exc}",
+            "attempted_at_utc": iso_z(now),
+            "confirmed_count": 0,
+            "failed_count": len(listings),
+        }
+
+    final_listings, final_status, succeeded = apply_refresh_outcome(
+        listings,
+        status,
+        candidate,
+        outcome,
+        now=now,
+    )
+    write_json(Path(status_path), final_status)
+    appended = 0
+    if succeeded:
+        write_json(Path(listings_path), final_listings)
+        appended = append_history(
+            final_listings,
+            Path(history_path),
+            outcome["attempted_at_utc"],
+        )
+    return {**outcome, "history_appended": appended}
+
+
 def main() -> None:
-    offline = os.environ.get("KEG_TRACKER_OFFLINE") == "1"
-    now = utc_now()
-    specs = normalize_specs(load_json(SPECS_PATH))
-    listings = load_json(LISTINGS_PATH)
-    refreshed = refresh_listings(listings, specs, now=now, offline=offline)
-    write_json(SPECS_PATH, specs)
-    write_json(LISTINGS_PATH, refreshed)
-    appended = append_history(refreshed, HISTORY_PATH, today_utc(now))
-    print(f"refreshed {len(refreshed)} listings; appended {appended} history rows")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--outcome-path", type=Path)
+    args = parser.parse_args()
+    offline = args.offline or os.environ.get("KEG_TRACKER_OFFLINE") == "1"
+    result = run_refresh(now=utc_now(), offline=offline)
+    if args.outcome_path:
+        write_json(args.outcome_path, result)
+    print(
+        f"refresh {result['status']}: {result['confirmed_count']} confirmed, "
+        f"{result['failed_count']} failed; appended {result['history_appended']} history rows"
+    )
     if offline:
         print("offline mode: live fetch skipped")
 

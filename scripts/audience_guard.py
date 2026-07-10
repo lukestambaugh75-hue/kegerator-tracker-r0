@@ -14,11 +14,16 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlsplit
 
+try:
+    from .refresh_state import utc_iso, validate_refresh_status
+except ImportError:
+    from refresh_state import utc_iso, validate_refresh_status
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_DASHBOARD_URL = "https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/"
 CANONICAL_INDEX_PATH = Path("index.html")
-CANONICAL_INDEX_SHA256 = "05d31b0fcacde38082a6eba63fc08af4c9ca6ab7633f545703d696ac29b30340"
+CANONICAL_INDEX_SHA256 = "ae13c7ee7bc9326f019388d5b7034741d35f1f05010f02721ad8ab6f0fede78f"
 EXPECTED_RECIPIENTS = ["lukestambaugh75@gmail.com", "devin.mullen89@gmail.com"]
 ALLOWED_RETAIL_HOSTS = {
     "kegco.com",
@@ -31,11 +36,13 @@ ALLOWED_RETAIL_HOSTS = {
 ALLOWED_LOCAL_RUNTIME = {
     "assets/kegerator-hero.png",
     "data/listings.json",
+    "data/refresh-status.json",
     "data/specs.json",
     "history.csv",
 }
 ALLOWED_FETCH_TARGETS = {
     "data/listings.json",
+    "data/refresh-status.json",
     "data/specs.json",
     "history.csv",
 }
@@ -869,6 +876,23 @@ def validate_repository(root: Path = ROOT) -> frozenset[str]:
     """Validate local dashboard, data, automation mirror, and generated email."""
     root = Path(root).resolve()
     listings = json.loads((root / "data" / "listings.json").read_text(encoding="utf-8"))
+    refresh = validate_refresh_status(
+        json.loads((root / "data" / "refresh-status.json").read_text(encoding="utf-8"))
+    )
+    success_at = refresh["data_refreshed_at_utc"]
+    if refresh["source_count"] != len(listings) or refresh["row_count"] != len(listings):
+        raise AudienceBoundaryError("refresh counts must represent every checked-in listing")
+    if refresh["quality_counts"] != {
+        "verified": len(listings),
+        "estimated": 0,
+        "blocked": 0,
+    }:
+        raise AudienceBoundaryError("refresh quality counts must represent one verified snapshot")
+    if any(
+        row.get("data_quality") != "confirmed" or utc_iso(row.get("retrieved")) != success_at
+        for row in listings
+    ):
+        raise AudienceBoundaryError("listings must represent the exact last successful data refresh")
     allowed_sources = listing_source_urls(listings)
     index_path = root / CANONICAL_INDEX_PATH
     validate_html(

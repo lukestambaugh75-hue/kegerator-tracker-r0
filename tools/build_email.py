@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
+import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -19,10 +22,12 @@ from scripts.audience_guard import (  # noqa: E402
     listing_source_urls,
     validate_email_payload,
 )
+from scripts.refresh_state import evaluate_refresh, format_central, utc_iso  # noqa: E402
 
 
 LISTINGS_PATH = ROOT / "data" / "listings.json"
 SPECS_PATH = ROOT / "data" / "specs.json"
+STATUS_PATH = ROOT / "data" / "refresh-status.json"
 DEFAULT_DASHBOARD_URL = CANONICAL_DASHBOARD_URL
 RECIPIENTS = list(EXPECTED_RECIPIENTS)
 
@@ -54,39 +59,93 @@ def row_line(label: str, row: dict | None) -> str:
     )
 
 
-def build_payload(listings: list[dict], specs: list[dict], dashboard_url: str = DEFAULT_DASHBOARD_URL) -> dict:
-    best = best_rows(listings)
-    outdoor_count = sum(1 for row in specs if row.get("outdoor_rated"))
+def _snapshot_is_represented(listings: list[dict], refresh: dict) -> bool:
+    success_at = utc_iso(refresh.get("data_refreshed_at_utc"))
+    if not success_at or not listings:
+        return False
+    quality = refresh.get("quality_counts") or {}
+    if refresh.get("row_count") != len(listings) or refresh.get("source_count") != len(listings):
+        return False
+    if quality != {"verified": len(listings), "estimated": 0, "blocked": 0}:
+        return False
+    return all(
+        row.get("data_quality") == "confirmed" and utc_iso(row.get("retrieved")) == success_at
+        for row in listings
+    )
+
+
+def _sanitized_reason(value: object) -> str:
+    return re.sub(r"\$\s?\d[\d,]*(?:\.\d{1,2})?", "[amount withheld]", str(value or "Not recorded"))
+
+
+def build_payload(
+    listings: list[dict],
+    specs: list[dict],
+    refresh_status: dict,
+    dashboard_url: str = DEFAULT_DASHBOARD_URL,
+    *,
+    now: datetime | None = None,
+) -> dict:
+    now = now or datetime.now(timezone.utc)
+    state = evaluate_refresh(refresh_status, now=now)
+    status = state["state"]
+    actionable = status in {"Fresh", "Due"} and _snapshot_is_represented(listings, refresh_status)
+    success_text = state["data_refreshed_at_central"]
+    attempt_text = state["last_attempt_at_central"]
+    if state["last_attempt_status"] != "unknown":
+        attempt_text = f"{attempt_text} ({state['last_attempt_status']})"
+    reason = _sanitized_reason(state["reason"])
     body_lines = [
-        "Kegerator price tracker",
+        "Kegerator tracker",
         "",
-        row_line("Lowest complete single tap", best["single"]),
-        row_line("Lowest complete dual tap", best["dual"]),
-        row_line("Lowest outdoor-rated", best["outdoor"]),
-        f"Models tracked: {len(specs)}",
-        f"Outdoor-rated models tracked: {outdoor_count}",
-        "",
+        f"Refresh state: {status}",
+        f"Last successful data refresh: {success_text}",
+        f"Latest attempt: {attempt_text}",
+        f"State reason: {reason}",
         f"Dashboard: {dashboard_url}",
-        "",
-        "Garage note: outdoor rating and low-temperature headroom matter in a hot Houston garage. Confirm final cart total, delivery timing, seller identity, and current stock before buying.",
     ]
     html_lines = [
-        "<h2>Kegerator price tracker</h2>",
-        f"<p>{row_line('Lowest complete single tap', best['single'])}</p>",
-        f"<p>{row_line('Lowest complete dual tap', best['dual'])}</p>",
-        f"<p>{row_line('Lowest outdoor-rated', best['outdoor'])}</p>",
-        f"<p>Models tracked: {len(specs)}. Outdoor-rated models tracked: {outdoor_count}.</p>",
-        f"<p>Dashboard: <a href='{dashboard_url}'>{dashboard_url}</a></p>",
-        "<p style='color:#666;font-size:12px'>Confirm final cart total, delivery timing, seller identity, and current stock before buying.</p>",
+        "<h2>Kegerator tracker</h2>",
+        f"<p><strong>Refresh state:</strong> {html.escape(status)}</p>",
+        f"<p><strong>Last successful data refresh:</strong> {html.escape(success_text)}</p>",
+        f"<p><strong>Latest attempt:</strong> {html.escape(attempt_text)}</p>",
+        f"<p><strong>State reason:</strong> {html.escape(reason)}</p>",
+        f"<p>Dashboard: <a href='{html.escape(dashboard_url)}'>{html.escape(dashboard_url)}</a></p>",
     ]
+    if actionable:
+        best = best_rows(listings)
+        outdoor_count = sum(1 for row in specs if row.get("outdoor_rated"))
+        body_lines.extend(
+            [
+                "",
+                row_line("Lowest complete single tap", best["single"]),
+                row_line("Lowest complete dual tap", best["dual"]),
+                row_line("Lowest outdoor-rated", best["outdoor"]),
+                f"Models tracked: {len(specs)}",
+                f"Outdoor-rated models tracked: {outdoor_count}",
+                "",
+                "Confirm final cart total, delivery timing, seller identity, and stock before buying.",
+            ]
+        )
+        html_lines.extend(
+            [
+                f"<p>{html.escape(row_line('Lowest complete single tap', best['single']))}</p>",
+                f"<p>{html.escape(row_line('Lowest complete dual tap', best['dual']))}</p>",
+                f"<p>{html.escape(row_line('Lowest outdoor-rated', best['outdoor']))}</p>",
+                f"<p>Models tracked: {len(specs)}. Outdoor-rated models tracked: {outdoor_count}.</p>",
+                "<p style='color:#666;font-size:12px'>Confirm final cart total, delivery timing, seller identity, and stock before buying.</p>",
+            ]
+        )
     payload = {
         "to": list(RECIPIENTS),
         "cc": [],
         "bcc": [],
-        "subject": "Kegerator tracker - garage-ready price watch",
+        "subject": f"Kegerator tracker - {status}",
         "body_text": "\n".join(body_lines),
         "body_html": "\n".join(html_lines),
         "dashboard_url": dashboard_url,
+        "generated_at": utc_iso(now),
+        "refresh_state": status,
     }
     validate_email_payload(payload, listing_source_urls(listings))
     return payload
@@ -99,7 +158,8 @@ def main() -> None:
     args = parser.parse_args()
     listings = json.loads(LISTINGS_PATH.read_text(encoding="utf-8"))
     specs = json.loads(SPECS_PATH.read_text(encoding="utf-8"))
-    payload = build_payload(listings, specs, args.dashboard_url)
+    refresh_status = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
+    payload = build_payload(listings, specs, refresh_status, args.dashboard_url)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / "latest-email.json"

@@ -1,7 +1,13 @@
+from __future__ import annotations
+
 import csv
+import copy
 import hashlib
 import io
 import json
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -25,6 +31,7 @@ def boundary_fixture(extra_head: str = "", extra_body: str = "") -> str:
     <script>
       fetch("data/listings.json");
       fetch("data/specs.json");
+      fetch("data/refresh-status.json");
       fetch("history.csv");
     </script>
   </body>
@@ -83,7 +90,7 @@ def test_normalize_listing_computes_discount_and_spec_fields():
     assert row["garage_suitability"] == "Good - deep-chill + fan-forced"
 
 
-def test_append_history_is_append_only_and_dedupes_same_day(tmp_path):
+def test_append_history_uses_only_exact_attempt_confirmations_and_central_date(tmp_path):
     from scripts.refresh import append_history
 
     history_path = tmp_path / "history.csv"
@@ -97,14 +104,37 @@ def test_append_history_is_append_only_and_dedupes_same_day(tmp_path):
             "list_price": 961,
             "source_url": "https://kegco.com/search?q=K309B-1",
             "data_quality": "confirmed",
+            "retrieved": "2026-07-05T01:30:00Z",
+        },
+        {
+            "brand": "Kegco",
+            "model": "K309SS-1",
+            "retailer": "Kegco.com",
+            "current_price": 999,
+            "list_price": 1099,
+            "source_url": "https://kegco.com/search?q=K309SS-1",
+            "data_quality": "confirmed",
+            "retrieved": "2026-07-04T12:00:00Z",
+        },
+        {
+            "brand": "Kegco",
+            "model": "K309X-1",
+            "retailer": "Kegco.com",
+            "current_price": 879,
+            "list_price": None,
+            "source_url": "https://kegco.com/search?q=K309X-1",
+            "data_quality": "estimated",
+            "retrieved": "2026-07-05T01:30:00Z",
         }
     ]
 
-    assert append_history(listings, history_path, "2026-07-04") == 1
-    assert append_history(listings, history_path, "2026-07-04") == 0
+    attempt = "2026-07-05T01:30:00Z"  # Jul 4 in America/Chicago.
+    assert append_history(listings, history_path, attempt) == 1
+    assert append_history(listings, history_path, attempt) == 0
 
     rows = list(csv.DictReader(io.StringIO(history_path.read_text(encoding="utf-8"))))
     assert len(rows) == 1
+    assert rows[0]["date"] == "2026-07-04"
     assert rows[0]["price"] == "914.55"
 
 
@@ -145,8 +175,20 @@ def test_seed_data_covers_requested_models_and_confirmed_rows():
         "Dual Tap",
     }
     assert required.issubset(models)
-    assert any(row["model"] == "K309SS-2" and row["retailer"] == "Home Depot" and row["current_price"] == 668.76 for row in listings)
-    assert any(row["model"] == "BR7001SSOD" and row["retailer"] == "EdgeStar.com" and row["current_price"] == 472.11 for row in listings)
+    assert any(
+        row["model"] == "K309SS-2"
+        and row["retailer"] == "Home Depot"
+        and row["source_url"] == "https://www.homedepot.com/s/K309SS-2"
+        and float(row["current_price"]) > 0
+        for row in listings
+    )
+    assert any(
+        row["model"] == "BR7001SSOD"
+        and row["retailer"] == "EdgeStar.com"
+        and row["source_url"] == "https://www.edgestar.com/search?q=BR7001SSOD"
+        and float(row["current_price"]) > 0
+        for row in listings
+    )
 
 
 def test_dashboard_fetches_live_json_and_csv():
@@ -154,7 +196,10 @@ def test_dashboard_fetches_live_json_and_csv():
 
     assert "data/listings.json" in html
     assert "data/specs.json" in html
+    assert "data/refresh-status.json" in html
     assert "history.csv" in html
+    assert "Last successful data refresh" in html
+    assert "historical" in html.lower()
     assert "Garage-ready" in html
     assert "Cross-retailer spread" in html
     assert "tracker-nav" not in html
@@ -369,7 +414,8 @@ def test_public_page_checker_applies_the_same_audience_boundary():
     from scripts.check_public_pages import validate_public_body
 
     raw = (Path.cwd() / CANONICAL_INDEX_PATH).read_bytes()
-    validate_public_body(raw, current_listing_urls())
+    status = json.loads(Path("data/refresh-status.json").read_text(encoding="utf-8"))
+    validate_public_body(raw, current_listing_urls(), status)
 
     bad = raw.replace(
         b"</body>",
@@ -377,7 +423,7 @@ def test_public_page_checker_applies_the_same_audience_boundary():
         1,
     )
     with pytest.raises(AudienceBoundaryError, match="digest mismatch"):
-        validate_public_body(bad, current_listing_urls())
+        validate_public_body(bad, current_listing_urls(), status)
 
 
 def test_email_payload_has_exact_recipients():
@@ -398,7 +444,28 @@ def test_email_payload_has_exact_recipients():
             "data_quality": "confirmed",
         }
     ]
-    payload = build_payload(listings, [], CANONICAL_DASHBOARD_URL)
+    refresh = {
+        "data_refreshed_at_utc": "2026-07-10T12:00:00Z",
+        "last_attempt_at_utc": "2026-07-10T12:00:00Z",
+        "last_attempt_status": "success",
+        "last_attempt_reason": None,
+        "cadence_minutes": 1440,
+        "grace_minutes": 180,
+        "timezone": "America/Chicago",
+        "archived": False,
+        "source_count": 1,
+        "row_count": 1,
+        "quality_counts": {"verified": 1, "estimated": 0, "blocked": 0},
+        "rendered_at_utc": None,
+        "published_at_utc": None,
+    }
+    payload = build_payload(
+        listings,
+        [],
+        refresh,
+        CANONICAL_DASHBOARD_URL,
+        now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc),
+    )
 
     assert payload["to"] == ["lukestambaugh75@gmail.com", "devin.mullen89@gmail.com"]
     assert payload["cc"] == []
@@ -406,7 +473,13 @@ def test_email_payload_has_exact_recipients():
     assert CANONICAL_DASHBOARD_URL in payload["body_text"]
 
     with pytest.raises(ValueError):
-        build_payload(listings, [], "https://example.com/keg")
+        build_payload(
+            listings,
+            [],
+            refresh,
+            "https://example.com/keg",
+            now=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc),
+        )
 
 
 def test_email_automation_mirror_uses_browser_gmail_route():
@@ -418,3 +491,522 @@ def test_email_automation_mirror_uses_browser_gmail_route():
     assert "out/latest-email.json" in text
     assert "signed-in Chrome/Gmail browser route" in text
     assert "https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/" in text
+
+
+def refresh_fixture(
+    *,
+    success_at: str | None = "2026-07-04T12:00:00Z",
+    attempt_at: str | None = "2026-07-04T12:00:00Z",
+    attempt_status: str = "success",
+    attempt_reason: str | None = None,
+    count: int = 2,
+) -> dict:
+    return {
+        "data_refreshed_at_utc": success_at,
+        "last_attempt_at_utc": attempt_at,
+        "last_attempt_status": attempt_status,
+        "last_attempt_reason": attempt_reason,
+        "cadence_minutes": 1440,
+        "grace_minutes": 180,
+        "timezone": "America/Chicago",
+        "archived": False,
+        "source_count": count,
+        "row_count": count,
+        "quality_counts": {"verified": count, "estimated": 0, "blocked": 0},
+        "rendered_at_utc": None,
+        "published_at_utc": None,
+    }
+
+
+def listing_fixture(model: str, price: float, retrieved: str = "2026-07-04T12:00:00Z") -> dict:
+    return {
+        "brand": "Kegco",
+        "model": model,
+        "description": f"{model} complete kegerator",
+        "tap_count": 1,
+        "finish": "black",
+        "type": "kegerator",
+        "complete_kit": True,
+        "retailer": "Kegco.com",
+        "current_price": price,
+        "list_price": price + 100,
+        "discount_pct": 10,
+        "in_stock": True,
+        "garage_suitability": "Good - deep-chill + fan-forced",
+        "outdoor_rated": False,
+        "source_url": f"https://kegco.com/products/{model}",
+        "data_quality": "confirmed",
+        "retrieved": retrieved,
+    }
+
+
+def test_refresh_state_precedence_boundaries_and_central_dst_labels():
+    from scripts.refresh_state import evaluate_refresh, format_central
+
+    success = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)
+    status = refresh_fixture()
+
+    assert evaluate_refresh(status, now=success + timedelta(minutes=1440))["state"] == "Fresh"
+    assert evaluate_refresh(status, now=success + timedelta(minutes=1440, seconds=1))["state"] == "Due"
+    assert evaluate_refresh(status, now=success + timedelta(minutes=1620))["state"] == "Due"
+    assert evaluate_refresh(status, now=success + timedelta(minutes=1620, seconds=1))["state"] == "Stale"
+
+    blocked = refresh_fixture(
+        attempt_at="2026-07-04T13:00:00Z",
+        attempt_status="partial",
+        attempt_reason="1 of 2 targets confirmed.",
+    )
+    assert evaluate_refresh(blocked, now=success + timedelta(hours=2))["state"] == "Blocked"
+
+    equal_attempt = refresh_fixture(attempt_status="failed", attempt_reason="same-time record")
+    assert evaluate_refresh(equal_attempt, now=success)["state"] == "Fresh"
+
+    archived = copy.deepcopy(blocked)
+    archived["archived"] = True
+    assert evaluate_refresh(archived, now=success + timedelta(hours=2))["state"] == "Archived"
+
+    unknown = refresh_fixture(success_at=None, attempt_at=None, attempt_status="unknown", count=0)
+    assert evaluate_refresh(unknown, now=success)["state"] == "Unknown"
+    assert "CDT" in format_central("2026-07-04T12:00:00Z")
+    assert "CST" in format_central("2026-01-04T12:00:00Z")
+
+
+def test_refresh_outcomes_classify_zero_partial_and_complete_current_evidence(monkeypatch):
+    from scripts import refresh
+
+    attempt = datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc)
+    rows = [listing_fixture("ONE", 800), listing_fixture("TWO", 900)]
+    specs = [
+        {
+            "brand": "Kegco",
+            "model": row["model"],
+            "tap_count": 1,
+            "complete_kit": True,
+            "outdoor_rated": False,
+            "deep_chill": True,
+            "fan_forced": True,
+            "temp_low_f": 32,
+        }
+        for row in rows
+    ]
+
+    monkeypatch.setattr(refresh, "try_live_price", lambda row, offline: (None, "blocked_or_no_price"))
+    blocked_rows, blocked = refresh.refresh_listings(rows, specs, now=attempt)
+    assert blocked["status"] == "blocked"
+    assert blocked["confirmed_count"] == 0
+    assert blocked["failed_count"] == 2
+    assert all(row["data_quality"] == "blocked" for row in blocked_rows)
+
+    monkeypatch.setattr(
+        refresh,
+        "try_live_price",
+        lambda row, offline: (777.0, "parsed") if row["model"] == "ONE" else (None, "blocked_or_no_price"),
+    )
+    partial_rows, partial = refresh.refresh_listings(rows, specs, now=attempt)
+    assert partial["status"] == "partial"
+    assert partial["confirmed_count"] == 1
+    assert partial["failed_count"] == 1
+    assert sum(row["data_quality"] == "confirmed" for row in partial_rows) == 1
+
+    monkeypatch.setattr(refresh, "try_live_price", lambda row, offline: (777.0, "parsed"))
+    complete_rows, complete = refresh.refresh_listings(rows, specs, now=attempt)
+    assert complete["status"] == "success"
+    assert complete["attempted_at_utc"] == "2026-07-11T12:00:00Z"
+    assert complete["confirmed_count"] == 2
+    assert complete["failed_count"] == 0
+    assert all(row["retrieved"] == complete["attempted_at_utc"] for row in complete_rows)
+
+
+def test_stale_http_cache_is_never_promoted_to_current_confirmation(monkeypatch):
+    from scripts import refresh
+
+    calls = []
+
+    def fake_fetch(url, use_cache=True):
+        calls.append(use_cache)
+        return "$123.45" if use_cache else None
+
+    monkeypatch.setattr(refresh, "fetch_url", fake_fetch)
+    row = listing_fixture("DIRECT", 800)
+    row["source_url"] = "https://kegco.com/products/direct"
+
+    amount, evidence = refresh.try_live_price(row, offline=False)
+
+    assert amount is None
+    assert evidence == "blocked_or_no_price"
+    assert calls == [False]
+
+
+@pytest.mark.parametrize("attempt_status", ["blocked", "partial", "failed"])
+def test_unsuccessful_attempt_preserves_entire_snapshot_and_changes_attempt_only(attempt_status):
+    from scripts.refresh_state import apply_refresh_outcome
+
+    prior_rows = [listing_fixture("ONE", 800), listing_fixture("TWO", 900)]
+    prior_status = refresh_fixture()
+    candidate_rows = [listing_fixture("ONE", 1), listing_fixture("TWO", 2)]
+    outcome = {
+        "status": attempt_status,
+        "reason": f"{attempt_status} source evidence",
+        "attempted_at_utc": "2026-07-11T12:00:00Z",
+        "confirmed_count": 0 if attempt_status != "partial" else 1,
+        "failed_count": 2 if attempt_status != "partial" else 1,
+    }
+
+    final_rows, final_status, succeeded = apply_refresh_outcome(
+        prior_rows,
+        prior_status,
+        candidate_rows,
+        outcome,
+        now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert succeeded is False
+    assert final_rows == prior_rows
+    assert final_status["data_refreshed_at_utc"] == prior_status["data_refreshed_at_utc"]
+    assert final_status["source_count"] == prior_status["source_count"]
+    assert final_status["row_count"] == prior_status["row_count"]
+    assert final_status["quality_counts"] == prior_status["quality_counts"]
+    assert final_status["last_attempt_at_utc"] == outcome["attempted_at_utc"]
+    assert final_status["last_attempt_status"] == attempt_status
+
+
+def test_only_complete_success_replaces_snapshot_and_advances_success_time():
+    from scripts.refresh_state import apply_refresh_outcome
+
+    prior_rows = [listing_fixture("ONE", 800), listing_fixture("TWO", 900)]
+    attempted_at = "2026-07-11T12:00:00Z"
+    current = [
+        listing_fixture("ONE", 700, attempted_at),
+        listing_fixture("TWO", 750, attempted_at),
+    ]
+    outcome = {
+        "status": "success",
+        "reason": "2 of 2 targets confirmed from current evidence.",
+        "attempted_at_utc": attempted_at,
+        "confirmed_count": 2,
+        "failed_count": 0,
+    }
+
+    final_rows, final_status, succeeded = apply_refresh_outcome(
+        prior_rows,
+        refresh_fixture(),
+        current,
+        outcome,
+        now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert succeeded is True
+    assert final_rows == current
+    assert final_status["data_refreshed_at_utc"] == attempted_at
+    assert final_status["last_attempt_at_utc"] == attempted_at
+    assert final_status["last_attempt_status"] == "success"
+    assert final_status["last_attempt_reason"] is None
+    assert final_status["quality_counts"] == {"verified": 2, "estimated": 0, "blocked": 0}
+
+
+@pytest.mark.parametrize(
+    ("attempted_at", "now", "message"),
+    [
+        ("2026-07-04T11:59:59Z", "2026-07-11T12:00:00Z", "newer than the stored attempt"),
+        ("2026-07-11T12:00:01Z", "2026-07-11T12:00:00Z", "future"),
+    ],
+)
+def test_attempts_reject_older_and_future_evidence(attempted_at, now, message):
+    from scripts.refresh_state import apply_refresh_outcome
+
+    outcome = {
+        "status": "blocked",
+        "reason": "no current evidence",
+        "attempted_at_utc": attempted_at,
+        "confirmed_count": 0,
+        "failed_count": 2,
+    }
+    with pytest.raises(ValueError, match=message):
+        apply_refresh_outcome(
+            [listing_fixture("ONE", 800), listing_fixture("TWO", 900)],
+            refresh_fixture(),
+            [],
+            outcome,
+            now=datetime.fromisoformat(now.replace("Z", "+00:00")),
+        )
+
+
+def test_run_refresh_persists_only_attempt_metadata_when_blocked(tmp_path, monkeypatch):
+    from scripts import refresh
+
+    listings_path = tmp_path / "listings.json"
+    specs_path = tmp_path / "specs.json"
+    status_path = tmp_path / "refresh-status.json"
+    history_path = tmp_path / "history.csv"
+    original_rows = [listing_fixture("ONE", 800), listing_fixture("TWO", 900)]
+    listings_path.write_text(json.dumps(original_rows) + "\n", encoding="utf-8")
+    specs_path.write_text("[]\n", encoding="utf-8")
+    status_path.write_text(json.dumps(refresh_fixture()) + "\n", encoding="utf-8")
+    history_path.write_text(
+        "date,brand,model,retailer,price,list_price,source,data_quality\n",
+        encoding="utf-8",
+    )
+    attempted_at = "2026-07-11T12:00:00Z"
+    candidate = [listing_fixture("ONE", 1), listing_fixture("TWO", 2)]
+    outcome = {
+        "status": "blocked",
+        "reason": "0 of 2 targets were confirmed.",
+        "attempted_at_utc": attempted_at,
+        "confirmed_count": 0,
+        "failed_count": 2,
+    }
+    monkeypatch.setattr(refresh, "refresh_listings", lambda *args, **kwargs: (candidate, outcome))
+
+    result = refresh.run_refresh(
+        listings_path=listings_path,
+        specs_path=specs_path,
+        status_path=status_path,
+        history_path=history_path,
+        now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "blocked"
+    assert json.loads(listings_path.read_text(encoding="utf-8")) == original_rows
+    assert history_path.read_text(encoding="utf-8").count("\n") == 1
+    stored_status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert stored_status["data_refreshed_at_utc"] == "2026-07-04T12:00:00Z"
+    assert stored_status["last_attempt_at_utc"] == attempted_at
+
+
+def test_run_refresh_writes_snapshot_and_exact_attempt_history_only_on_success(tmp_path, monkeypatch):
+    from scripts import refresh
+
+    listings_path = tmp_path / "listings.json"
+    specs_path = tmp_path / "specs.json"
+    status_path = tmp_path / "refresh-status.json"
+    history_path = tmp_path / "history.csv"
+    listings_path.write_text(
+        json.dumps([listing_fixture("ONE", 800), listing_fixture("TWO", 900)]) + "\n",
+        encoding="utf-8",
+    )
+    specs_path.write_text("[]\n", encoding="utf-8")
+    status_path.write_text(json.dumps(refresh_fixture()) + "\n", encoding="utf-8")
+    history_path.write_text(
+        "date,brand,model,retailer,price,list_price,source,data_quality\n",
+        encoding="utf-8",
+    )
+    attempted_at = "2026-07-11T12:00:00Z"
+    candidate = [
+        listing_fixture("ONE", 700, attempted_at),
+        listing_fixture("TWO", 750, attempted_at),
+    ]
+    outcome = {
+        "status": "success",
+        "reason": "2 of 2 targets confirmed from current evidence.",
+        "attempted_at_utc": attempted_at,
+        "confirmed_count": 2,
+        "failed_count": 0,
+    }
+    monkeypatch.setattr(refresh, "refresh_listings", lambda *args, **kwargs: (candidate, outcome))
+
+    result = refresh.run_refresh(
+        listings_path=listings_path,
+        specs_path=specs_path,
+        status_path=status_path,
+        history_path=history_path,
+        now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "success"
+    assert result["history_appended"] == 2
+    assert json.loads(listings_path.read_text(encoding="utf-8")) == candidate
+    stored_status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert stored_status["data_refreshed_at_utc"] == attempted_at
+    history_rows = list(csv.DictReader(io.StringIO(history_path.read_text(encoding="utf-8"))))
+    assert len(history_rows) == 2
+    assert {row["date"] for row in history_rows} == {"2026-07-11"}
+
+
+def test_history_repair_check_write_idempotence_and_validation(tmp_path):
+    from scripts.repair_history import repair_history
+
+    path = tmp_path / "history.csv"
+    header = "date,brand,model,retailer,price,list_price,source,data_quality\n"
+    confirmed = "2026-07-04,Kegco,A,Kegco.com,800,900,https://kegco.com/a,confirmed\n"
+    estimated = "2026-07-05,Kegco,A,Kegco.com,800,900,https://kegco.com/a,estimated\n"
+    original = header + confirmed * 24 + estimated * 144
+    path.write_text(original, encoding="utf-8")
+
+    kept, removed = repair_history(path, check=True)
+    assert (kept, removed) == (24, 144)
+    assert path.read_text(encoding="utf-8") == original
+
+    kept, removed = repair_history(path)
+    assert (kept, removed) == (24, 144)
+    assert path.read_bytes() == (header + confirmed * 24).encode("utf-8")
+    assert repair_history(path, check=True) == (24, 0)
+    assert repair_history(path) == (24, 0)
+
+    bad = tmp_path / "bad.csv"
+    bad.write_text(header + confirmed.replace("confirmed", "mystery"), encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown data_quality"):
+        repair_history(bad, check=True)
+
+
+def test_history_repair_cli_reports_exact_check_counts_and_exit_codes(tmp_path):
+    path = tmp_path / "history.csv"
+    header = "date,brand,model,retailer,price,list_price,source,data_quality\n"
+    confirmed = "2026-07-04,Kegco,A,Kegco.com,800,900,https://kegco.com/a,confirmed\n"
+    estimated = "2026-07-05,Kegco,A,Kegco.com,800,900,https://kegco.com/a,estimated\n"
+    path.write_text(header + confirmed * 24 + estimated * 144, encoding="utf-8")
+    script = Path("scripts/repair_history.py").resolve()
+
+    before = subprocess.run(
+        [sys.executable, str(script), "--path", str(path), "--check"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert before.returncode != 0
+    assert before.stdout.strip() == "24 kept, 144 would remove"
+
+    repaired = subprocess.run(
+        [sys.executable, str(script), "--path", str(path)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert repaired.returncode == 0
+    assert repaired.stdout.strip() == "24 kept, 144 removed"
+
+    after = subprocess.run(
+        [sys.executable, str(script), "--path", str(path), "--check"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert after.returncode == 0
+    assert after.stdout.strip() == "24 kept, 0 would remove"
+
+
+def test_checked_in_snapshot_and_history_remain_success_only():
+    from scripts.refresh_state import validate_refresh_status
+
+    listings = json.loads(Path("data/listings.json").read_text(encoding="utf-8"))
+    status = validate_refresh_status(
+        json.loads(Path("data/refresh-status.json").read_text(encoding="utf-8"))
+    )
+    history_rows = list(csv.DictReader(Path("history.csv").open(newline="", encoding="utf-8")))
+
+    assert len(listings) == 24
+    assert {row["data_quality"] for row in listings} == {"confirmed"}
+    assert {row["retrieved"] for row in listings} == {status["data_refreshed_at_utc"]}
+    assert status["source_count"] == len(listings)
+    assert status["row_count"] == len(listings)
+    assert status["quality_counts"] == {"verified": 24, "estimated": 0, "blocked": 0}
+    assert len(history_rows) >= 24
+    assert {row["data_quality"] for row in history_rows} == {"confirmed"}
+
+
+def test_migration_changes_only_listing_provenance_not_prices_urls_or_timestamps():
+    from scripts.refresh_state import migrate_successful_snapshot
+
+    previous = [
+        {**listing_fixture("ONE", 843.99), "data_quality": "estimated"},
+        {**listing_fixture("TWO", 999.99), "data_quality": "estimated"},
+    ]
+    original = copy.deepcopy(previous)
+    current = migrate_successful_snapshot(previous, "2026-07-04T12:00:00Z")
+
+    def without_quality(rows):
+        return [
+            {key: value for key, value in row.items() if key != "data_quality"}
+            for row in rows
+        ]
+
+    assert without_quality(current) == without_quality(previous)
+    assert previous == original
+    assert {row["data_quality"] for row in previous} == {"estimated"}
+    assert {row["data_quality"] for row in current} == {"confirmed"}
+
+
+@pytest.mark.parametrize(
+    ("status", "now", "expected_state"),
+    [
+        (
+            refresh_fixture(
+                attempt_at="2026-07-10T13:10:23Z",
+                attempt_status="blocked",
+                attempt_reason="0 of 2 targets confirmed.",
+            ),
+            datetime(2026, 7, 10, 14, 0, tzinfo=timezone.utc),
+            "Blocked",
+        ),
+        (
+            refresh_fixture(),
+            datetime(2026, 7, 5, 15, 0, 1, tzinfo=timezone.utc),
+            "Stale",
+        ),
+        (
+            refresh_fixture(success_at=None, attempt_at=None, attempt_status="unknown", count=0),
+            datetime(2026, 7, 10, 14, 0, tzinfo=timezone.utc),
+            "Unknown",
+        ),
+    ],
+)
+def test_non_actionable_email_contains_no_prices_or_recommendation_language(status, now, expected_state):
+    from tools.build_email import build_payload
+
+    rows = [listing_fixture("ONE", 843.99), listing_fixture("TWO", 999.99)]
+    payload = build_payload(rows, [], status, CANONICAL_DASHBOARD_URL, now=now)
+    combined = f"{payload['subject']}\n{payload['body_text']}\n{payload['body_html']}"
+    lowered = combined.lower()
+
+    assert payload["refresh_state"] == expected_state
+    assert "Last successful data refresh:" in payload["body_text"]
+    assert "Latest attempt:" in payload["body_text"]
+    assert "State reason:" in payload["body_text"]
+    assert CANONICAL_DASHBOARD_URL in combined
+    assert "$" not in combined
+    assert "lowest" not in lowered
+    assert "best" not in lowered
+    assert "current recommendation" not in lowered
+
+
+def test_workflow_serializes_publishes_status_then_fails_non_success_without_double_refresh():
+    workflow = Path(".github/workflows/refresh.yml").read_text(encoding="utf-8")
+
+    assert "concurrency:" in workflow
+    assert "group: kegerator-refresh" in workflow
+    assert "cancel-in-progress: false" in workflow
+    assert workflow.count("python scripts/refresh.py") == 1
+    assert "make verify" not in workflow
+    assert "make refresh" not in workflow
+    assert "data/refresh-status.json" in workflow
+    assert "scripts/repair_history.py --check" in workflow
+    assert "tools/build_email.py" in workflow
+    assert "scripts/audience_guard.py" in workflow
+    assert "partial" in workflow
+    commit_position = workflow.index("git commit")
+    failure_position = workflow.index("Fail non-successful refresh")
+    assert commit_position < failure_position
+    assert "git push" in workflow[commit_position:failure_position]
+
+
+def test_public_status_contract_matches_snapshot_and_historical_dashboard_treatment():
+    from scripts.check_public_pages import validate_public_status
+
+    listings = [listing_fixture("ONE", 843.99), listing_fixture("TWO", 999.99)]
+    status = refresh_fixture(
+        attempt_at="2026-07-10T13:10:23Z",
+        attempt_status="blocked",
+        attempt_reason="0 of 2 targets were confirmed.",
+    )
+    body = Path("index.html").read_bytes()
+
+    state = validate_public_status(
+        status,
+        listings,
+        now=datetime(2026, 7, 10, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert state["state"] == "Blocked"
+    assert b"data_refreshed_at_utc" in body
+    assert b"Last successful data refresh" in body
+    assert b"Historical only" in body
+    assert b"data/refresh-status.json" in body

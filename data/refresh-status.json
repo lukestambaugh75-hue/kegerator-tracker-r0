@@ -1,0 +1,19 @@
+{
+  "data_refreshed_at_utc": "2026-07-04T12:00:00Z",
+  "last_attempt_at_utc": "2026-07-10T13:10:23Z",
+  "last_attempt_status": "blocked",
+  "last_attempt_reason": "0 of 24 targets were confirmed; the legacy job did not persist its exact acquisition start time.",
+  "cadence_minutes": 1440,
+  "grace_minutes": 180,
+  "timezone": "America/Chicago",
+  "archived": false,
+  "source_count": 24,
+  "row_count": 24,
+  "quality_counts": {
+    "verified": 24,
+    "estimated": 0,
+    "blocked": 0
+  },
+  "rendered_at_utc": null,
+  "published_at_utc": null
+}

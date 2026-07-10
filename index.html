@@ -83,6 +83,16 @@
       background: rgba(114,216,255,.08);
     }
     .color-index p { margin-bottom: 0; }
+    .refresh-panel { display: grid; gap: 14px; border-left: 4px solid var(--red); }
+    .refresh-panel dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 0; }
+    .refresh-panel dt { color: var(--muted); font-size: .74rem; font-weight: 850; letter-spacing: .06em; text-transform: uppercase; }
+    .refresh-panel dd { margin: 4px 0 0; font-weight: 800; }
+    .state-badge { display: inline-flex; width: fit-content; min-height: 28px; align-items: center; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); font-size: .8rem; font-weight: 900; }
+    .state-badge.fresh { color: #102316; background: var(--good); border-color: var(--good); }
+    .state-badge.due { color: #2b1d00; background: var(--amber); border-color: var(--amber); }
+    .state-badge.blocked, .state-badge.stale { color: #2e0808; background: var(--red); border-color: var(--red); }
+    .state-badge.unknown, .state-badge.archived { color: #08242f; background: var(--cold); border-color: var(--cold); }
+    .historical-warning { margin: 0; padding: 12px 14px; border: 1px solid var(--red); border-radius: 8px; background: rgba(255,139,139,.1); color: var(--ink); }
     .section { padding: 32px 0; }
     .section.alt { background: #121819; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
     .pick-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -124,6 +134,7 @@
     @media (max-width: 980px) {
       .wrap { width: min(1180px, calc(100% - 32px)); }
       .metrics, .pick-grid, .spread-grid, .mover-grid, .filters, .chart-controls { grid-template-columns: 1fr; }
+      .refresh-panel dl { grid-template-columns: 1fr; }
       .hero {
         min-height: auto;
         align-items: flex-start;
@@ -150,7 +161,7 @@
     <div class="wrap hero-content">
       <p class="eyebrow">Hot Houston garage price tracker</p>
       <h1>Kegerator <span class="title-break">Tracker</span></h1>
-      <p class="lead" id="heroLead">Loading current kegerator prices, garage heat suitability, and retailer spread.</p>
+      <p class="lead" id="heroLead">Loading refresh status and stored kegerator observations.</p>
       <div class="metrics" id="kpis"></div>
       <div class="color-index">
         <span class="eyebrow">Color index</span>
@@ -160,10 +171,26 @@
   </header>
 
   <main>
+    <section class="section" id="data-freshness">
+      <div class="wrap panel refresh-panel">
+        <span class="state-badge blocked" id="refreshState">Loading</span>
+        <div>
+          <span class="eyebrow">Actual data freshness</span>
+          <h2>Source-data refresh record</h2>
+        </div>
+        <p class="historical-warning" id="historicalWarning"><strong>Historical only.</strong> Stored prices remain visible for reference until a complete source refresh succeeds.</p>
+        <dl>
+          <div><dt>Last successful data refresh</dt><dd id="lastSuccessfulRefresh">Loading</dd></div>
+          <div><dt>Latest attempt</dt><dd id="latestRefreshAttempt">Loading</dd></div>
+          <div><dt>Why this state</dt><dd id="refreshReason">Loading</dd></div>
+        </dl>
+      </div>
+    </section>
+
     <section class="section alt" id="garage-ready">
       <div class="wrap">
         <span class="eyebrow">Garage-ready</span>
-        <h2>Outdoor-rated and cold-headroom picks first</h2>
+        <h2 id="garageHeading">Garage-fit context from the stored snapshot</h2>
         <div class="pick-grid" id="garagePicks"></div>
       </div>
     </section>
@@ -171,7 +198,7 @@
     <section class="section" id="current-listings">
       <div class="wrap panel">
         <span class="eyebrow">Sortable listings</span>
-        <h2>Current Retailer Rows</h2>
+        <h2 id="listingHeading">Stored Retailer Rows</h2>
         <div class="filters">
           <label>Tap count<select id="tapFilter"></select></label>
           <label>Complete kit<select id="kitFilter"></select></label>
@@ -199,7 +226,7 @@
     <section class="section alt" id="retailer-spread">
       <div class="wrap">
         <span class="eyebrow">Cross-retailer spread</span>
-        <h2>Where the same model varies most</h2>
+        <h2 id="spreadHeading">Stored cross-retailer differences</h2>
         <div class="spread-grid" id="spreadGrid"></div>
       </div>
     </section>
@@ -207,7 +234,7 @@
     <section class="section" id="price-movement">
       <div class="wrap">
         <span class="eyebrow">Price movement</span>
-        <h2>Discounts and drops</h2>
+        <h2 id="movementHeading">Stored discounts and confirmed history changes</h2>
         <div class="mover-grid" id="moverGrid"></div>
       </div>
     </section>
@@ -231,7 +258,7 @@
       <div class="wrap panel">
         <span class="eyebrow">Source rules</span>
         <h2>Refresh Guardrails</h2>
-        <p class="muted">The refresh script uses cached polite source checks, respects robots.txt, and marks blocked or unconfirmed rows as estimated rather than promoting stale prices as confirmed.</p>
+        <p class="muted">Each attempt checks source pages anew and never treats an old HTTP cache entry as current confirmation. Only a complete 24-of-24 success can replace the stored snapshot or add history.</p>
       </div>
     </section>
   </main>
@@ -239,11 +266,36 @@
   <footer class="wrap footer">Confirm final cart total, tax, shipping or pickup timing, seller identity, keg fit, and garage ventilation before buying.</footer>
 
   <script>
-    const state = { listings: [], specs: [], history: [], range: "all" };
+    const state = { listings: [], specs: [], refresh: null, refreshState: "Unknown", actionable: false, history: [], range: "all" };
     const fmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
     const money = value => value === null || value === undefined || value === "" ? "not shown" : fmt.format(Number(value)).replace(".00", "");
     const uniq = values => [...new Set(values.filter(value => value !== null && value !== undefined && value !== ""))].sort();
     const modelKey = row => `${row.brand} ${row.model}`;
+
+    function deriveRefreshState(refresh) {
+      if (refresh.archived) return "Archived";
+      const successAt = new Date(refresh.data_refreshed_at_utc);
+      const attemptAt = new Date(refresh.last_attempt_at_utc);
+      const now = new Date();
+      if (!refresh.data_refreshed_at_utc || Number.isNaN(successAt.getTime()) || successAt > now) return "Unknown";
+      if (refresh.last_attempt_at_utc && (Number.isNaN(attemptAt.getTime()) || attemptAt > now)) return "Unknown";
+      if (["blocked", "partial", "failed"].includes(refresh.last_attempt_status) && attemptAt > successAt) return "Blocked";
+      const ageMinutes = (now - successAt) / 60000;
+      if (ageMinutes <= Number(refresh.cadence_minutes)) return "Fresh";
+      if (ageMinutes <= Number(refresh.cadence_minutes) + Number(refresh.grace_minutes)) return "Due";
+      return "Stale";
+    }
+
+    function representedSnapshot() {
+      if (!state.refresh || !state.refresh.data_refreshed_at_utc) return false;
+      const quality = state.refresh.quality_counts || {};
+      return state.refresh.source_count === state.listings.length
+        && state.refresh.row_count === state.listings.length
+        && quality.verified === state.listings.length
+        && quality.estimated === 0
+        && quality.blocked === 0
+        && state.listings.every(row => row.data_quality === "confirmed" && row.retrieved === state.refresh.data_refreshed_at_utc);
+    }
 
     function badgeClass(text, quality) {
       if (quality === "estimated" || quality === "snapshot_varies") return "warn";
@@ -272,13 +324,17 @@
     }
 
     async function loadData() {
-      const [listings, specs, historyText] = await Promise.all([
+      const [listings, specs, refreshStatus, historyText] = await Promise.all([
         fetch("data/listings.json").then(r => r.json()),
         fetch("data/specs.json").then(r => r.json()),
+        fetch("data/refresh-status.json").then(r => r.json()),
         fetch("history.csv").then(r => r.text())
       ]);
       state.listings = listings;
       state.specs = specs;
+      state.refresh = refreshStatus;
+      state.refreshState = deriveRefreshState(refreshStatus);
+      state.actionable = ["Fresh", "Due"].includes(state.refreshState) && representedSnapshot();
       state.history = parseCsv(historyText);
       initControls();
       renderAll();
@@ -342,12 +398,29 @@
     }
 
     function renderAll() {
+      renderRefreshState();
       renderKpis();
       renderGaragePicks();
       renderTable();
       renderSpreads();
       renderMovers();
       renderChart();
+    }
+
+    function renderRefreshState() {
+      const stateNode = document.getElementById("refreshState");
+      stateNode.textContent = state.refreshState;
+      stateNode.className = `state-badge ${state.refreshState.toLowerCase()}`;
+      document.getElementById("lastSuccessfulRefresh").textContent = formatTimestamp(state.refresh.data_refreshed_at_utc);
+      const attemptStatus = state.refresh.last_attempt_status || "unknown";
+      document.getElementById("latestRefreshAttempt").textContent = `${formatTimestamp(state.refresh.last_attempt_at_utc)} (${attemptStatus})`;
+      document.getElementById("refreshReason").textContent = state.refresh.last_attempt_reason || "The latest complete source check succeeded.";
+      const warning = document.getElementById("historicalWarning");
+      warning.hidden = state.actionable;
+      document.getElementById("garageHeading").textContent = state.actionable ? "Outdoor-rated and cold-headroom rows first" : "Garage-fit context from the stored snapshot";
+      document.getElementById("listingHeading").textContent = state.actionable ? "Verified Retailer Rows" : "Stored Retailer Rows - historical";
+      document.getElementById("spreadHeading").textContent = state.actionable ? "Verified cross-retailer differences" : "Stored cross-retailer differences";
+      document.getElementById("movementHeading").textContent = state.actionable ? "Verified discounts and drops" : "Stored discounts and confirmed history changes";
     }
 
     function renderKpis() {
@@ -357,22 +430,24 @@
       const dual = minBy(complete.filter(row => row.tap_count === 2));
       const outdoor = minBy(complete.filter(row => row.outdoor_rated));
       const prices = state.listings.map(row => row.current_price).filter(value => value !== null && value !== undefined).map(Number);
-      const latest = state.listings.map(row => row.retrieved).sort().pop() || "not refreshed";
-      document.getElementById("heroLead").textContent = `${state.specs.length} models. Garage-ready picks first.`;
+      const historical = !state.actionable;
+      document.getElementById("heroLead").textContent = historical
+        ? `${state.refreshState}. Stored prices are historical only; the latest source attempt did not produce a complete snapshot.`
+        : `${state.specs.length} models with a complete verified snapshot.`;
       document.getElementById("kpis").innerHTML = [
-        card("Lowest single tap", single ? money(single.current_price) : "n/a", single ? `${single.retailer} - ${single.brand} ${single.model}` : "complete kit rows"),
-        card("Lowest dual tap", dual ? money(dual.current_price) : "n/a", dual ? `${dual.retailer} - ${dual.brand} ${dual.model}` : "complete kit rows"),
-        card("Lowest outdoor", outdoor ? money(outdoor.current_price) : "n/a", outdoor ? `${outdoor.retailer} - ${outdoor.brand} ${outdoor.model}` : "outdoor-rated rows"),
-        card("Price range", prices.length ? `${money(Math.min(...prices))} - ${money(Math.max(...prices))}` : "n/a", "visible retailer rows"),
-        card("Models tracked", state.specs.length, `${state.listings.length} current price rows`),
-        card("Last refresh", formatTimestamp(latest), "source timestamp")
+        card(historical ? "Stored single snapshot" : "Lowest single tap", single ? money(single.current_price) : "n/a", single ? `${single.retailer} - ${single.brand} ${single.model}${historical ? " - historical" : ""}` : "complete kit rows"),
+        card(historical ? "Stored dual snapshot" : "Lowest dual tap", dual ? money(dual.current_price) : "n/a", dual ? `${dual.retailer} - ${dual.brand} ${dual.model}${historical ? " - historical" : ""}` : "complete kit rows"),
+        card(historical ? "Stored outdoor snapshot" : "Lowest outdoor", outdoor ? money(outdoor.current_price) : "n/a", outdoor ? `${outdoor.retailer} - ${outdoor.brand} ${outdoor.model}${historical ? " - historical" : ""}` : "outdoor-rated rows"),
+        card(historical ? "Stored price range" : "Price range", prices.length ? `${money(Math.min(...prices))} - ${money(Math.max(...prices))}` : "n/a", historical ? "historical retailer rows" : "verified retailer rows"),
+        card("Models tracked", state.specs.length, `${state.listings.length} stored rows`),
+        card("Last successful refresh", formatTimestamp(state.refresh.data_refreshed_at_utc), "actual source-data timestamp")
       ].join("");
     }
 
     function formatTimestamp(value) {
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) return value;
-      return date.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC", timeZoneName: "short" });
+      return date.toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Chicago", timeZoneName: "short" });
     }
 
     function card(label, value, note) {
@@ -396,7 +471,7 @@
           </div>
           <p class="muted">${escapeHtml(row.description)}</p>
         </article>
-      `).join("") || `<p class="empty">No current garage-ready rows.</p>`;
+      `).join("") || `<p class="empty">No stored garage-fit rows.</p>`;
     }
 
     function renderTable() {
@@ -429,7 +504,7 @@
       document.getElementById("spreadGrid").innerHTML = spreads.map(item => `
         <article class="spread-card">
           <span class="eyebrow">${escapeHtml(item.model)}</span>
-          <h3>${money(item.min.current_price)} best at ${escapeHtml(item.min.retailer)}</h3>
+          <h3>${money(item.min.current_price)} ${state.actionable ? "best" : "stored"} at ${escapeHtml(item.min.retailer)}</h3>
           <p class="muted">High row: ${escapeHtml(item.max.retailer)} at ${money(item.max.current_price)}</p>
           <p class="price">Spread: ${money(item.spread)}</p>
         </article>

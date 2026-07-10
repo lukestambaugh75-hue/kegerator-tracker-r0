@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: kegerator-refresh
+  cancel-in-progress: false
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
@@ -18,21 +22,41 @@ jobs:
           python-version: "3.11"
       - name: Install test dependencies
         run: python -m pip install --upgrade pip pytest
-      - name: Refresh data
-        run: python scripts/refresh.py
-      - name: Verify
+      - name: Refresh data once
+        run: python scripts/refresh.py --outcome-path "$RUNNER_TEMP/kegerator-refresh-outcome.json"
+      - name: Run non-mutating verification
         run: |
           python -m json.tool data/listings.json >/dev/null
           python -m json.tool data/specs.json >/dev/null
+          python -m json.tool data/refresh-status.json >/dev/null
           python -m pytest -q
-      - name: Commit refreshed data
+          python scripts/audience_guard.py
+          python scripts/repair_history.py --check
+          python tools/build_email.py --output-dir "$RUNNER_TEMP/kegerator-email"
+          python -m py_compile scripts/*.py tools/*.py
+          git diff --check
+      - name: Commit verified refresh state
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/listings.json data/specs.json history.csv
+          git add data/listings.json data/refresh-status.json history.csv
           if git diff --cached --quiet; then
-            echo "No data changes to commit"
+            echo "No verified refresh-state changes to commit"
           else
-            git commit -m "Refresh Kegerator dashboard data"
+            git commit -m "Record Kegerator refresh outcome"
             git push
           fi
+      - name: Fail non-successful refresh
+        run: |
+          python - "$RUNNER_TEMP/kegerator-refresh-outcome.json" <<'PY'
+          import json
+          import sys
+
+          outcome = json.load(open(sys.argv[1], encoding="utf-8"))
+          status = outcome.get("status")
+          if status in {"blocked", "partial", "failed"}:
+              raise SystemExit(f"Kegerator acquisition ended {status}: {outcome.get('reason')}")
+          if status != "success":
+              raise SystemExit(f"Unknown Kegerator refresh status: {status}")
+          print("Kegerator acquisition completed with a full successful snapshot")
+          PY

@@ -15,7 +15,7 @@
     "garage_suitability": "Fair - limited cold headroom",
     "outdoor_rated": false,
     "source_url": "https://www.homedepot.com/s/DKC054A1BSL2DB",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -34,7 +34,7 @@
     "garage_suitability": "Fair - limited cold headroom",
     "outdoor_rated": false,
     "source_url": "https://www.edgestar.com/search?q=BR2001BL",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -53,7 +53,7 @@
     "garage_suitability": "Fair - limited cold headroom",
     "outdoor_rated": false,
     "source_url": "https://www.edgestar.com/search?q=BR2001SS",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -72,7 +72,7 @@
     "garage_suitability": "Fair - limited cold headroom",
     "outdoor_rated": false,
     "source_url": "https://www.edgestar.com/search?q=BR3002BL",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -91,7 +91,7 @@
     "garage_suitability": "Best - outdoor rated",
     "outdoor_rated": true,
     "source_url": "https://www.edgestar.com/search?q=BR7001SSOD",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -110,7 +110,7 @@
     "garage_suitability": "Fair - limited cold headroom",
     "outdoor_rated": false,
     "source_url": "https://www.homedepot.com/s/EFRB150-SS",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -129,7 +129,7 @@
     "garage_suitability": "Fair - limited cold headroom",
     "outdoor_rated": false,
     "source_url": "https://www.homedepot.com/s/EFRB200",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -148,7 +148,7 @@
     "garage_suitability": "Good - low-30s headroom",
     "outdoor_rated": false,
     "source_url": "https://www.edgestar.com/search?q=KC1000SS",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -167,7 +167,7 @@
     "garage_suitability": "Fair - limited cold headroom",
     "outdoor_rated": false,
     "source_url": "https://www.edgestar.com/search?q=KC2000SS",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -186,7 +186,7 @@
     "garage_suitability": "Good - deep-chill + fan-forced",
     "outdoor_rated": false,
     "source_url": "https://www.homedepot.com/s/HBK209S-2",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -205,7 +205,7 @@
     "garage_suitability": "Best - outdoor rated",
     "outdoor_rated": true,
     "source_url": "https://www.homedepot.com/s/HK38BSC-2",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -224,7 +224,7 @@
     "garage_suitability": "Best - outdoor rated",
     "outdoor_rated": true,
     "source_url": "https://www.homedepot.com/s/HK38BSU-2",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -243,7 +243,7 @@
     "garage_suitability": "Best - outdoor rated",
     "outdoor_rated": true,
     "source_url": "https://www.homedepot.com/s/HK38SSC-L-2",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -262,7 +262,7 @@
     "garage_suitability": "Best - outdoor rated",
     "outdoor_rated": true,
     "source_url": "https://kegco.com/search?q=HK38SSU-2",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -281,7 +281,7 @@
     "garage_suitability": "Good - deep-chill + fan-forced",
     "outdoor_rated": false,
     "source_url": "https://www.homedepot.com/s/K209SS-1",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -300,7 +300,7 @@
     "garage_suitability": "Good - deep-chill + fan-forced",
     "outdoor_rated": false,
     "source_url": "https://www.homedepot.com/s/K309B-1",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -319,7 +319,7 @@
     "garage_suitability": "Good - deep-chill + fan-forced",
     "outdoor_rated": false,
     "source_url": "https://kegco.com/search?q=K309B-1",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -338,7 +338,7 @@
     "garage_suitability": "Good - deep-chill + fan-forced",
     "outdoor_rated": false,
     "source_url": "https://www.homedepot.com/s/K309B-2",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -357,7 +357,7 @@
     "garage_suitability": "Good - deep-chill + fan-forced",
     "outdoor_rated": false,
     "source_url": "https://kegco.com/search?q=K309B-2",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -376,7 +376,7 @@
     "garage_suitability": "Good - deep-chill + fan-forced",
     "outdoor_rated": false,
     "source_url": "https://www.homedepot.com/s/K309SS-2",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -395,7 +395,7 @@
     "garage_suitability": "Good - deep-chill + fan-forced",
     "outdoor_rated": false,
     "source_url": "https://kegco.com/search?q=K309SS-2",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -414,7 +414,7 @@
     "garage_suitability": "Good - deep-chill + fan-forced",
     "outdoor_rated": false,
     "source_url": "https://www.homedepot.com/s/K309X-1",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -433,7 +433,7 @@
     "garage_suitability": "Good - deep-chill + fan-forced",
     "outdoor_rated": false,
     "source_url": "https://www.homedepot.com/s/Z163S-2",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   },
   {
@@ -452,7 +452,7 @@
     "garage_suitability": "Best - outdoor rated",
     "outdoor_rated": true,
     "source_url": "https://www.homedepot.com/s/SBC683OSTWIN",
-    "data_quality": "estimated",
+    "data_quality": "confirmed",
     "retrieved": "2026-07-04T12:00:00Z"
   }
 ]

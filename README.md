@@ -37,6 +37,8 @@ make open
 
 `make verify` runs the refresh, JSON validation, pytest, email payload generation, audience guard, and whitespace checks. `make audience` is the local boundary check; `make pages-check` applies the same boundary to the deployed page and its current listing data.
 
+The audience guard pins the exact `index.html` path and SHA-256 bytes before applying its parser checks. Any intentional dashboard HTML, CSS, or inline JavaScript edit must update the pinned digest and tests in the same reviewed commit; GitHub Pages must serve those exact bytes.
+
 ## Data Quality
 
 `confirmed` means a row came from a confirmed source snapshot or live parse. `snapshot_varies` means the same source may show different visible placements in the same day. `estimated` means the refresh could not confirm a new price and preserved the last known value as an estimate instead of pretending it is freshly confirmed.

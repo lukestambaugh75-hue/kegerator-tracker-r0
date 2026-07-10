@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import os
@@ -16,6 +17,8 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_DASHBOARD_URL = "https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/"
+CANONICAL_INDEX_PATH = Path("index.html")
+CANONICAL_INDEX_SHA256 = "05d31b0fcacde38082a6eba63fc08af4c9ca6ab7633f545703d696ac29b30340"
 EXPECTED_RECIPIENTS = ["lukestambaugh75@gmail.com", "devin.mullen89@gmail.com"]
 ALLOWED_RETAIL_HOSTS = {
     "kegco.com",
@@ -41,6 +44,9 @@ CSS_URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE | re.DOTA
 CSS_IMPORT_RE = re.compile(
     r"@import\s+(?:url\(\s*)?(['\"])(.*?)\1\s*\)?", re.IGNORECASE | re.DOTALL
 )
+CSS_ESCAPE_RE = re.compile(
+    r"\\(?:([0-9a-fA-F]{1,6})(?:\r\n|[ \t\r\n\f])?|([^\r\n\f0-9a-fA-F]))"
+)
 ABSOLUTE_URL_RE = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
 EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 SCRIPT_ACTIVE_ATTR_RE = re.compile(
@@ -52,9 +58,25 @@ SCRIPT_BLOCKED_TAG_RE = re.compile(
     r"<\s*(base|embed|form|iframe|link|meta|object|script|style|svg)\b",
     re.IGNORECASE,
 )
-INTERACTIVE_TAGS = {"a", "button", "menu", "nav", "option", "summary"}
+INTERACTIVE_TAGS = {"a", "area", "button", "input", "menu", "nav", "option", "summary"}
 INTERACTIVE_ROLES = {"button", "link", "menu", "menuitem", "navigation", "tab"}
 SVG_RESOURCE_TAGS = {"feimage", "image", "use"}
+VOID_TAGS = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+}
 FORBIDDEN_NAV_TOKENS = {
     "alldealtrackers",
     "alltrackers",
@@ -73,7 +95,9 @@ FORBIDDEN_NAV_TOKENS = {
     "weatherdashboard",
 }
 UNSAFE_SCRIPT_IDENTIFIERS = {
+    "Audio",
     "BroadcastChannel",
+    "DOMParser",
     "EventSource",
     "Function",
     "Image",
@@ -81,6 +105,8 @@ UNSAFE_SCRIPT_IDENTIFIERS = {
     "WebSocket",
     "Worker",
     "XMLHttpRequest",
+    "atob",
+    "btoa",
     "eval",
     "globalThis",
     "history",
@@ -94,6 +120,7 @@ UNSAFE_SCRIPT_IDENTIFIERS = {
     "top",
     "window",
 }
+UNSAFE_URL_MEMBER_IDENTIFIERS = {"action", "formAction", "href", "src", "srcdoc"}
 UNSAFE_DOCUMENT_MEMBERS = {
     "URL",
     "cookie",
@@ -174,11 +201,28 @@ def listing_source_urls(listings: list[dict]) -> frozenset[str]:
     return frozenset(urls)
 
 
+def _decode_css_escapes(css_text: str) -> str:
+    """Decode CSS escapes before looking for browser-active URL functions."""
+    css_text = re.sub(r"\\(?:\r\n|\r|\n|\f)", "", css_text or "")
+
+    def replace(match: re.Match) -> str:
+        hex_value, character = match.groups()
+        if character is not None:
+            return character
+        codepoint = int(hex_value, 16)
+        if codepoint == 0 or codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+            return "\N{REPLACEMENT CHARACTER}"
+        return chr(codepoint)
+
+    return CSS_ESCAPE_RE.sub(replace, css_text)
+
+
 def _css_references(css_text: str, context: str) -> list[tuple[str, str, str]]:
+    css_text = _decode_css_escapes(css_text)
     references = []
-    for match in CSS_URL_RE.finditer(css_text or ""):
+    for match in CSS_URL_RE.finditer(css_text):
         references.append(("resource", html.unescape(match.group(2).strip()), context))
-    for match in CSS_IMPORT_RE.finditer(css_text or ""):
+    for match in CSS_IMPORT_RE.finditer(css_text):
         references.append(("resource", html.unescape(match.group(2).strip()), context))
     return references
 
@@ -195,6 +239,10 @@ class _BoundaryParser(HTMLParser):
         self._style_depth = 0
         self._interactive_stack: list[dict] = []
         self._labels: list[str] = []
+        self._id_stack: list[dict] = []
+        self._id_text: dict[str, str] = {}
+        self._seen_ids: set[str] = set()
+        self._aria_labelledby_groups: list[tuple[str, ...]] = []
 
     def _handle_tag(self, tag: str, attrs: list[tuple[str, str | None]]) -> bool:
         names = [str(name).lower() for name, _ in attrs]
@@ -222,6 +270,10 @@ class _BoundaryParser(HTMLParser):
 
         role = str(attrs_by_name.get("role") or "").strip().lower()
         is_interactive = tag in INTERACTIVE_TAGS or role in INTERACTIVE_ROLES
+        if is_interactive:
+            labelled_by = str(attrs_by_name.get("aria-labelledby") or "").strip()
+            if labelled_by:
+                self._aria_labelledby_groups.append(tuple(labelled_by.split()))
         for name, value in attrs:
             name = str(name).lower()
             value = html.unescape(str(value or "").strip())
@@ -240,11 +292,16 @@ class _BoundaryParser(HTMLParser):
             if not value:
                 continue
             context = f"<{tag}> {name}"
-            if is_interactive and name in {"aria-label", "title", "value"}:
-                self._labels.append(value)
+            if name in {"alt", "aria-label", "title", "value"}:
+                if is_interactive:
+                    self._labels.append(value)
+                for element in self._interactive_stack:
+                    element["parts"].append(value)
+                for element in self._id_stack:
+                    element["parts"].append(value)
             if name == "style":
                 self.references.extend(_css_references(value, context))
-            elif name == "srcset":
+            elif name in {"imagesrcset", "srcset"}:
                 for candidate in value.split(","):
                     resource = candidate.strip().split()[0] if candidate.strip() else ""
                     if resource:
@@ -261,14 +318,39 @@ class _BoundaryParser(HTMLParser):
             raise AudienceBoundaryError("meta refresh redirects are not allowed")
         return is_interactive
 
+    def _start_id_capture(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_by_name = {str(name).lower(): value for name, value in attrs}
+        element_id = str(attrs_by_name.get("id") or "").strip()
+        if not element_id:
+            return
+        if element_id in self._seen_ids:
+            raise AudienceBoundaryError(f"duplicate HTML id is not allowed: {element_id}")
+        self._seen_ids.add(element_id)
+        fallback = " ".join(
+            str(attrs_by_name.get(name) or "").strip()
+            for name in ("aria-label", "alt", "title", "value")
+            if str(attrs_by_name.get(name) or "").strip()
+        )
+        if tag in VOID_TAGS:
+            self._id_text[element_id] = fallback
+        else:
+            parts = [fallback] if fallback else []
+            self._id_stack.append({"tag": tag, "id": element_id, "parts": parts})
+
     def handle_starttag(self, tag, attrs) -> None:
         tag = tag.lower()
-        if self._handle_tag(tag, attrs):
+        is_interactive = self._handle_tag(tag, attrs)
+        self._start_id_capture(tag, attrs)
+        if is_interactive and tag not in VOID_TAGS:
             self._interactive_stack.append({"tag": tag, "parts": []})
 
     def handle_startendtag(self, tag, attrs) -> None:
         tag = tag.lower()
         self._handle_tag(tag, attrs)
+        self._start_id_capture(tag, attrs)
+        if self._id_stack and self._id_stack[-1]["tag"] == tag:
+            element = self._id_stack.pop()
+            self._id_text[element["id"]] = " ".join(element["parts"]).strip()
         if tag == "style":
             self._style_depth -= 1
         if tag == "script":
@@ -282,6 +364,12 @@ class _BoundaryParser(HTMLParser):
         if tag == "script" and self._script_depth:
             self._script_depth -= 1
             self._current_script = None
+        for index in range(len(self._id_stack) - 1, -1, -1):
+            if self._id_stack[index]["tag"] == tag:
+                for element in self._id_stack[index:]:
+                    self._id_text[element["id"]] = " ".join(element["parts"]).strip()
+                del self._id_stack[index:]
+                break
         for index in range(len(self._interactive_stack) - 1, -1, -1):
             if self._interactive_stack[index]["tag"] == tag:
                 for element in self._interactive_stack[index:]:
@@ -300,7 +388,9 @@ class _BoundaryParser(HTMLParser):
                 self._current_script["parts"].append(data)
             return
         text = data.strip()
-        if text and self._interactive_stack:
+        if text:
+            for element in self._id_stack:
+                element["parts"].append(text)
             for element in self._interactive_stack:
                 element["parts"].append(text)
 
@@ -311,6 +401,22 @@ class _BoundaryParser(HTMLParser):
             for element in self._interactive_stack
             if element["parts"]
         )
+        open_ids = {
+            element["id"]: " ".join(element["parts"]).strip()
+            for element in self._id_stack
+        }
+        for references in self._aria_labelledby_groups:
+            parts = []
+            for reference in references:
+                if reference in self._id_text:
+                    parts.append(self._id_text[reference])
+                elif reference in open_ids:
+                    parts.append(open_ids[reference])
+                else:
+                    raise AudienceBoundaryError(
+                        f"aria-labelledby references a missing id: {reference}"
+                    )
+            labels.append(" ".join(parts).strip())
         return labels
 
 
@@ -567,12 +673,26 @@ def _validate_script_source(
     values = [token[1] for token in tokens]
     for index, token in enumerate(tokens):
         kind, value, escaped = token
-        if kind != "identifier":
-            continue
         next_value = values[index + 1] if index + 1 < len(values) else None
         previous = values[index - 1] if index else None
+        if (
+            kind == "string"
+            and not escaped
+            and value in UNSAFE_URL_MEMBER_IDENTIFIERS
+            and previous == "["
+            and next_value == "]"
+        ):
+            raise AudienceBoundaryError(
+                f"computed URL-bearing member is not allowed in {script_name}: {value}"
+            )
+        if kind != "identifier":
+            continue
         if value == "import":
             raise AudienceBoundaryError(f"JavaScript imports are not allowed in {script_name}")
+        if value in UNSAFE_URL_MEMBER_IDENTIFIERS:
+            raise AudienceBoundaryError(
+                f"URL-bearing DOM member is not allowed in {script_name}: {value}"
+            )
         is_data_member = previous == "." or next_value == ":"
         if value in UNSAFE_SCRIPT_IDENTIFIERS and not (
             value == "history" and is_data_member
@@ -618,13 +738,13 @@ def _absolute_urls(value: object) -> set[str]:
     }
 
 
-def validate_html(
+def validate_html_semantics(
     html_text: str,
     *,
     allowed_listing_urls: set[str] | frozenset[str],
     asset_root: Path = ROOT,
 ) -> None:
-    """Validate the active link graph of a Kegerator dashboard page."""
+    """Apply parser and script defense-in-depth checks to supplied HTML."""
     allowed_urls = frozenset({CANONICAL_DASHBOARD_URL, *allowed_listing_urls})
     parser = _parse_html(html_text)
     for kind, value, context in parser.references:
@@ -652,6 +772,49 @@ def validate_html(
         if script_type not in {"", "application/javascript", "module", "text/javascript"}:
             raise AudienceBoundaryError(f"unrecognized inline script type: {script_type}")
         _validate_script_source(content, allowed_urls, f"inline script {index}")
+
+
+def _validate_canonical_index_path(source_path: Path | str, asset_root: Path) -> None:
+    if isinstance(source_path, Path):
+        expected = (Path(asset_root).resolve() / CANONICAL_INDEX_PATH).resolve()
+        if source_path.resolve() != expected:
+            raise AudienceBoundaryError(
+                f"canonical index path must be {expected}; got {source_path.resolve()}"
+            )
+        return
+    if str(source_path) != CANONICAL_DASHBOARD_URL:
+        raise AudienceBoundaryError(
+            f"canonical index path must be {CANONICAL_DASHBOARD_URL}; got {source_path}"
+        )
+
+
+def validate_html(
+    html_content: bytes,
+    *,
+    allowed_listing_urls: set[str] | frozenset[str],
+    asset_root: Path = ROOT,
+    source_path: Path | str,
+) -> None:
+    """Pin canonical index bytes/path, then apply semantic defense in depth."""
+    _validate_canonical_index_path(source_path, asset_root)
+    if not isinstance(html_content, bytes):
+        raise AudienceBoundaryError("canonical index must be validated from exact bytes")
+    raw = html_content
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != CANONICAL_INDEX_SHA256:
+        raise AudienceBoundaryError(
+            "canonical index digest mismatch: "
+            f"expected {CANONICAL_INDEX_SHA256}, got {digest}"
+        )
+    try:
+        html_text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise AudienceBoundaryError(f"canonical index is not valid UTF-8: {exc}") from exc
+    validate_html_semantics(
+        html_text,
+        allowed_listing_urls=allowed_listing_urls,
+        asset_root=asset_root,
+    )
 
 
 def validate_email_payload(
@@ -707,10 +870,12 @@ def validate_repository(root: Path = ROOT) -> frozenset[str]:
     root = Path(root).resolve()
     listings = json.loads((root / "data" / "listings.json").read_text(encoding="utf-8"))
     allowed_sources = listing_source_urls(listings)
+    index_path = root / CANONICAL_INDEX_PATH
     validate_html(
-        (root / "index.html").read_text(encoding="utf-8"),
+        index_path.read_bytes(),
         allowed_listing_urls=allowed_sources,
         asset_root=root,
+        source_path=index_path,
     )
     validate_automation_mirror(
         (root / "automation" / "kegerator-tracker-email.toml").read_text(encoding="utf-8")

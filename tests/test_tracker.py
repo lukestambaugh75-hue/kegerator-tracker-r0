@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -28,6 +29,13 @@ def boundary_fixture(extra_head: str = "", extra_body: str = "") -> str:
     </script>
   </body>
 </html>"""
+
+
+def current_listing_urls() -> frozenset[str]:
+    from scripts.audience_guard import listing_source_urls
+
+    listings = json.loads(Path("data/listings.json").read_text(encoding="utf-8"))
+    return listing_source_urls(listings)
 
 
 def test_compute_garage_suitability_priority_order():
@@ -170,10 +178,97 @@ def test_audience_guard_accepts_the_current_repository():
     validate_repository(Path.cwd())
 
 
-def test_audience_guard_accepts_only_the_kegerator_page_current_sources_and_runtime_files():
-    from scripts.audience_guard import validate_html
+def test_canonical_index_digest_and_path_are_pinned():
+    from scripts.audience_guard import (
+        CANONICAL_INDEX_PATH,
+        CANONICAL_INDEX_SHA256,
+        validate_html,
+    )
 
+    path = Path.cwd() / CANONICAL_INDEX_PATH
+    raw = path.read_bytes()
+
+    assert CANONICAL_INDEX_PATH == Path("index.html")
+    assert hashlib.sha256(raw).hexdigest() == CANONICAL_INDEX_SHA256
     validate_html(
+        raw,
+        allowed_listing_urls=current_listing_urls(),
+        asset_root=Path.cwd(),
+        source_path=path,
+    )
+
+
+def test_audience_guard_rejects_any_one_byte_index_mutation():
+    from scripts.audience_guard import AudienceBoundaryError, CANONICAL_INDEX_PATH, validate_html
+
+    path = Path.cwd() / CANONICAL_INDEX_PATH
+    raw = bytearray(path.read_bytes())
+    offset = raw.index(b"Kegerator Tracker")
+    raw[offset] = ord("k")
+
+    with pytest.raises(AudienceBoundaryError, match="digest mismatch"):
+        validate_html(
+            bytes(raw),
+            allowed_listing_urls=current_listing_urls(),
+            asset_root=Path.cwd(),
+            source_path=path,
+        )
+
+
+@pytest.mark.parametrize(
+    "injection",
+    [
+        b'<script>const a=document.querySelector("a");a["hr"+"ef"]="/other-repo/";</script>',
+        b'<script>document.body.innerHTML=atob("PGlmcmFtZSBzcmM9Jy9vdGhlci1yZXBvLyc+PC9pZnJhbWU+");</script>',
+        b'<script>new Audio("ht"+"tps://example.com/track.mp3");</script>',
+        b'<style>.x{background:u\\72l("https://example.com/shared.png")}</style>',
+    ],
+)
+def test_obfuscated_html_script_and_css_mutations_fail_at_the_digest_boundary(injection):
+    from scripts.audience_guard import AudienceBoundaryError, CANONICAL_INDEX_PATH, validate_html
+
+    path = Path.cwd() / CANONICAL_INDEX_PATH
+    raw = path.read_bytes().replace(b"</body>", injection + b"</body>", 1)
+
+    with pytest.raises(AudienceBoundaryError, match="digest mismatch"):
+        validate_html(
+            raw,
+            allowed_listing_urls=current_listing_urls(),
+            asset_root=Path.cwd(),
+            source_path=path,
+        )
+
+
+def test_audience_guard_rejects_a_noncanonical_index_path():
+    from scripts.audience_guard import AudienceBoundaryError, CANONICAL_INDEX_PATH, validate_html
+
+    raw = (Path.cwd() / CANONICAL_INDEX_PATH).read_bytes()
+    with pytest.raises(AudienceBoundaryError, match="canonical index path"):
+        validate_html(
+            raw,
+            allowed_listing_urls=current_listing_urls(),
+            asset_root=Path.cwd(),
+            source_path=Path.cwd() / "other.html",
+        )
+
+
+def test_canonical_index_validation_requires_exact_bytes():
+    from scripts.audience_guard import AudienceBoundaryError, CANONICAL_INDEX_PATH, validate_html
+
+    path = Path.cwd() / CANONICAL_INDEX_PATH
+    with pytest.raises(AudienceBoundaryError, match="exact bytes"):
+        validate_html(
+            path.read_text(encoding="utf-8"),
+            allowed_listing_urls=current_listing_urls(),
+            asset_root=Path.cwd(),
+            source_path=path,
+        )
+
+
+def test_audience_semantics_accept_only_the_kegerator_page_current_sources_and_runtime_files():
+    from scripts.audience_guard import validate_html_semantics
+
+    validate_html_semantics(
         boundary_fixture(extra_body=f'<a href="{CANONICAL_DASHBOARD_URL}">Kegerator Tracker</a>'),
         allowed_listing_urls={CURRENT_SOURCE_URL},
     )
@@ -201,23 +296,36 @@ def test_audience_guard_accepts_only_the_kegerator_page_current_sources_and_runt
         ("", '<script>history.pushState(null, "", "/other-repo/");</script>'),
         ("", '<script>document.defaultView.location.assign("/other-repo/");</script>'),
         ("", '<script>document.querySelector("a").href="/other-repo/";</script>'),
+        ("", '<script>const anchor=document.querySelector("a");anchor["href"]="/other-repo/";</script>'),
         ("", '<script>document.body.innerHTML=\'<meta http-equiv="refresh" content="0;url=/other-repo/">\';</script>'),
         ("", '<script>new WebSocket("wss://example.com/feed");</script>'),
+        ("", '<script>new Audio("ht"+"tps://example.com/feed.mp3");</script>'),
         ("", '<script src="../PS5 and TV Deal Tracker r0/assets/dashboard-ui.mjs"></script>'),
         ("", '<script src="assets/shared-dashboard-ui.mjs"></script>'),
         ("", '<img src="data/private.json" alt="">'),
+        ('<link rel="preload" imagesrcset="assets/kegerator-hero.png 1x, https://example.com/shared.png 2x">', ""),
+        ('<style>.card { background: u\\72l("https://example.com/shared.png") }</style>', ""),
         ("", '<iframe srcdoc="&lt;a href=&quot;https://example.com&quot;&gt;x&lt;/a&gt;"></iframe>'),
         ("", '<a href="#current-listings" ping="https://example.com/collect">Current listings</a>'),
+        ("", '<input type="button" value="M a i n  D a s h b o a r d">'),
+        ("", '<area href="#current-listings" alt="Ford Raptor">'),
+        ("", '<a href="#current-listings"><img src="assets/kegerator-hero.png" alt="PS5 + TV"></a>'),
+        ("", '<span id="other-label">Main Dashboard</span><a href="#current-listings" aria-labelledby="other-label">Open</a>'),
+        ("", '<span id="label-one">Main</span><span id="label-two">Dashboard</span><a href="#current-listings" aria-labelledby="label-one label-two">Open</a>'),
+        ("", '<span id="image-label"><img src="assets/kegerator-hero.png" alt="Main Dashboard"></span><a href="#current-listings" aria-labelledby="image-label">Open</a>'),
         ("", '<a href="#current-listings">D a i l y  D a s h b o a r d</a>'),
         ("", '<a href="#current-listings">All deal trackers</a>'),
         ("", '<a href="https://www.homedepot.com/s/not-a-current-listing">Another listing</a>'),
     ],
 )
 def test_audience_guard_rejects_cross_dashboard_and_evasive_runtime_paths(extra_head, extra_body):
-    from scripts.audience_guard import AudienceBoundaryError, validate_html
+    from scripts.audience_guard import AudienceBoundaryError, validate_html_semantics
 
     with pytest.raises(AudienceBoundaryError):
-        validate_html(boundary_fixture(extra_head, extra_body), allowed_listing_urls={CURRENT_SOURCE_URL})
+        validate_html_semantics(
+            boundary_fixture(extra_head, extra_body),
+            allowed_listing_urls={CURRENT_SOURCE_URL},
+        )
 
 
 @pytest.mark.parametrize(
@@ -257,12 +365,19 @@ def test_audience_guard_rejects_cross_dashboard_urls_hidden_in_email_bodies():
 
 
 def test_public_page_checker_applies_the_same_audience_boundary():
-    from scripts.audience_guard import AudienceBoundaryError
+    from scripts.audience_guard import AudienceBoundaryError, CANONICAL_INDEX_PATH
     from scripts.check_public_pages import validate_public_body
 
-    bad = boundary_fixture(extra_body='<a href="https://lukestambaugh75-hue.github.io/ps5-tv-deal-tracker-r0/">TV deals</a>')
-    with pytest.raises(AudienceBoundaryError):
-        validate_public_body(bad, {CURRENT_SOURCE_URL})
+    raw = (Path.cwd() / CANONICAL_INDEX_PATH).read_bytes()
+    validate_public_body(raw, current_listing_urls())
+
+    bad = raw.replace(
+        b"</body>",
+        b'<a href="https://lukestambaugh75-hue.github.io/ps5-tv-deal-tracker-r0/">TV deals</a></body>',
+        1,
+    )
+    with pytest.raises(AudienceBoundaryError, match="digest mismatch"):
+        validate_public_body(bad, current_listing_urls())
 
 
 def test_email_payload_has_exact_recipients():

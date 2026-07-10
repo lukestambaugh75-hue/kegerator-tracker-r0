@@ -31,12 +31,20 @@ def fetch(url: str) -> tuple[int, bytes]:
         return response.status, response.read()
 
 
-def validate_public_body(body: str, allowed_listing_urls: set[str] | frozenset[str]) -> None:
+def validate_public_body(body: bytes, allowed_listing_urls: set[str] | frozenset[str]) -> None:
+    if not isinstance(body, bytes):
+        raise AudienceBoundaryError("public dashboard must be validated as exact response bytes")
+    validate_html(
+        body,
+        allowed_listing_urls=allowed_listing_urls,
+        asset_root=ROOT,
+        source_path=PUBLIC_URL,
+    )
+    text = body.decode("utf-8")
     required = ["Kegerator Tracker", "data/listings.json", "data/specs.json", "history.csv"]
-    missing = [text for text in required if text not in body]
+    missing = [value for value in required if value not in text]
     if missing:
         raise AudienceBoundaryError(f"public dashboard missing: {missing}")
-    validate_html(body, allowed_listing_urls=allowed_listing_urls, asset_root=ROOT)
 
 
 def main() -> None:
@@ -48,7 +56,7 @@ def main() -> None:
         raise SystemExit(f"unexpected listings status {listings_status}")
     listings = json.loads(raw_listings.decode("utf-8"))
     validate_public_body(
-        raw_body.decode("utf-8", errors="ignore"),
+        raw_body,
         listing_source_urls(listings),
     )
     print(f"public dashboard ok: {PUBLIC_URL}")

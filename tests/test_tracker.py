@@ -712,6 +712,7 @@ def test_structured_price_stays_bound_to_matched_product_own_offer(monkeypatch):
     outside_offer = {"@type": "Offer", "price": "149", "priceCurrency": "USD"}
     matched = {
         "@type": "Product",
+        "model": "K309B-1",
         "name": "Kegco K309B-1 complete kegerator",
         "offers": {"@type": "Offer", "price": "843.99", "priceCurrency": "USD"},
     }
@@ -741,17 +742,67 @@ def test_structured_product_identity_match_is_alphanumeric_bounded(expected, can
     assert parse_structured_product_price(jsonld_page(product), expected) is None
 
 
-@pytest.mark.parametrize("identity_field", ["model", "mpn", "sku", "productID", "name"])
+@pytest.mark.parametrize("identity_field", ["model", "mpn", "sku", "productID"])
 def test_structured_product_accepts_exact_identity_fields_and_own_usd_offer(identity_field):
     from scripts.refresh import parse_structured_product_price
 
     product = {
         "@type": ["Thing", "Product"],
-        identity_field: "Kegco K309B-1 complete kegerator" if identity_field == "name" else "K309B-1",
+        identity_field: "K309B-1",
+        "name": "Kegco K309B-1 complete kegerator",
         "offers": {"@type": "Offer", "price": "843.99", "priceCurrency": "USD"},
     }
 
     assert parse_structured_product_price(jsonld_page(product), "K309B-1") == 843.99
+
+
+@pytest.mark.parametrize("dedicated_value", ["K309B-1", "k309b 1", "K309B_1"])
+def test_dedicated_identity_compares_entire_alphanumeric_normalized_value(dedicated_value):
+    from scripts.refresh import parse_structured_product_price
+
+    product = {
+        "@type": "Product",
+        "mpn": dedicated_value,
+        "offers": {"@type": "Offer", "price": "843.99", "priceCurrency": "USD"},
+    }
+    assert parse_structured_product_price(jsonld_page(product), "K309B-1") == 843.99
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "K309B-1",
+        "Compatible with K309B-1 accessory tray",
+        "Replacement part for K309B-1",
+    ],
+)
+def test_structured_product_name_never_qualifies_without_exact_dedicated_identity(name):
+    from scripts.refresh import parse_structured_product_price
+
+    product = {
+        "@type": "Product",
+        "name": name,
+        "offers": {"@type": "Offer", "price": "199", "priceCurrency": "USD"},
+    }
+
+    assert parse_structured_product_price(jsonld_page(product), "K309B-1") is None
+
+
+def test_structured_product_requires_exactly_one_matching_product_object():
+    from scripts.refresh import parse_structured_product_price
+
+    first = {
+        "@type": "Product",
+        "model": "K309B-1",
+        "offers": {"@type": "Offer", "price": "843.99", "priceCurrency": "USD"},
+    }
+    second = {
+        "@type": "Product",
+        "sku": "K309B1",
+        "offers": {"@type": "Offer", "price": "799.99", "priceCurrency": "USD"},
+    }
+
+    assert parse_structured_product_price(jsonld_page(first, second), "K309B-1") is None
 
 
 def test_structured_product_supports_aggregate_low_price_but_requires_usd_and_finite_positive():
@@ -798,6 +849,15 @@ class FakeHttpResponse:
         "https://kegco.com/products/k309b-1?source=search",
         "https://kegco.com/products/k309b-1?",
         "https://kegco.com/products/k309b-1#",
+        "https://kegco.com/products/K309B%2D1",
+        "https://kegco.com/products/%2Fsearch/K309B-1",
+        "https://kegco.com/products/..%2Fsearch/K309B-1",
+        "https://kegco.com/products/%252Fsearch/K309B-1",
+        "https://kegco.com/products//K309B-1",
+        "https://kegco.com/products/./K309B-1",
+        "https://kegco.com/products/../K309B-1",
+        "https://kegco.com/products\\search\\K309B-1",
+        "https://kegco.com/products/\x1f/K309B-1",
         "https://kegco.com/search-results/k309b-1",
         "https://kegco.com/se%61rch/k309b-1",
         "https://kegco.com/browse/k309b-1",
@@ -837,6 +897,32 @@ def test_fetch_url_returns_body_and_validated_final_direct_url(tmp_path, monkeyp
     )
 
     assert refresh.fetch_url(requested, use_cache=False) == ("safe body", requested)
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [
+        "https://kegco.com/products/K309B%2D1",
+        "https://kegco.com/products/%2Fsearch/K309B-1",
+        "https://kegco.com/products/..%2Fsearch/K309B-1",
+        "https://kegco.com/products/%252Fsearch/K309B-1",
+        "https://kegco.com/products/%2e%2e/search/K309B-1",
+        "https://kegco.com/products//K309B-1",
+        "https://kegco.com/products/./K309B-1",
+        "https://kegco.com/products/../K309B-1",
+        "https://kegco.com/products\\search\\K309B-1",
+        "https://kegco.com/products/\n/K309B-1",
+    ],
+)
+def test_requested_url_rejects_encoded_ambiguous_or_traversal_path_before_fetch(requested, monkeypatch):
+    from scripts import refresh
+
+    def forbidden_urlopen(*args, **kwargs):
+        raise AssertionError("ambiguous source paths must be rejected before network access")
+
+    monkeypatch.setattr(refresh.urllib.request, "urlopen", forbidden_urlopen)
+    assert refresh.source_is_direct_product_page(requested) is False
+    assert refresh.fetch_url(requested, use_cache=False) is None
 
 
 @pytest.mark.parametrize("attempt_status", ["blocked", "partial", "failed"])

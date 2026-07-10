@@ -12,6 +12,7 @@ import os
 import re
 import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -147,7 +148,7 @@ def cache_path_for(url: str) -> Path:
 
 
 def _path_has_discovery_segment(path: str) -> bool:
-    segments = [urllib.parse.unquote(segment).casefold() for segment in path.split("/") if segment]
+    segments = [segment.casefold() for segment in path.split("/") if segment]
     if not segments:
         return True
     for segment in segments:
@@ -156,6 +157,16 @@ def _path_has_discovery_segment(path: str) -> bool:
         ):
             return True
     return segments[-1] in {"product", "products", "item", "items", "p"}
+
+
+def _url_has_ambiguous_path_syntax(raw_url: str, path: str) -> bool:
+    if "%" in raw_url or "\\" in raw_url:
+        return True
+    if any(character.isspace() or unicodedata.category(character).startswith("C") for character in raw_url):
+        return True
+    if "//" in path:
+        return True
+    return any(segment in {".", ".."} for segment in path.split("/"))
 
 
 def source_is_direct_product_page(url: str) -> bool:
@@ -170,6 +181,7 @@ def source_is_direct_product_page(url: str) -> bool:
         and not parsed.fragment
         and "?" not in raw_url
         and "#" not in raw_url
+        and not _url_has_ambiguous_path_syntax(raw_url, parsed.path)
         and not _path_has_discovery_segment(parsed.path)
     )
 
@@ -256,16 +268,20 @@ def _iter_product_nodes(value):
             yield from _iter_product_nodes(child)
 
 
-def _identity_matches(value: object, expected_model: object) -> bool:
+def _normalized_dedicated_identity(value: object) -> str:
     if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", str(value).casefold())
+
+
+def _has_exact_dedicated_identity(product: dict, expected_model: object) -> bool:
+    expected = _normalized_dedicated_identity(expected_model)
+    if not expected:
         return False
-    parts = re.findall(r"[a-z0-9]+", str(expected_model or "").casefold())
-    if not parts:
-        return False
-    pattern = r"(?<![a-z0-9])" + r"[^a-z0-9]*".join(
-        re.escape(part) for part in parts
-    ) + r"(?![a-z0-9])"
-    return re.search(pattern, str(value), flags=re.IGNORECASE) is not None
+    return any(
+        _normalized_dedicated_identity(product.get(field)) == expected
+        for field in ("model", "mpn", "sku", "productID")
+    )
 
 
 def _finite_positive_price(value: object) -> float | None:
@@ -311,20 +327,19 @@ def parse_structured_product_price(page_html: str | None, expected_model: object
         parser.close()
     except Exception:
         return None
-    candidates: list[float] = []
+    matching_products: list[dict] = []
     for document in parser.documents:
         try:
             value = json.loads(document)
         except (TypeError, json.JSONDecodeError):
             continue
         for product in _iter_product_nodes(value):
-            if not any(
-                _identity_matches(product.get(field), expected_model)
-                for field in ("model", "mpn", "sku", "productID", "name")
-            ):
-                continue
-            candidates.extend(_own_usd_offer_prices(product))
-    return min(candidates) if candidates else None
+            if _has_exact_dedicated_identity(product, expected_model):
+                matching_products.append(product)
+    if len(matching_products) != 1:
+        return None
+    prices = _own_usd_offer_prices(matching_products[0])
+    return min(prices) if prices else None
 
 
 def try_live_price(row: dict, offline: bool) -> tuple[float | None, str]:

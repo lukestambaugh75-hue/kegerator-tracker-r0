@@ -1,6 +1,6 @@
 {
   "data_refreshed_at_utc": "2026-07-04T12:00:00Z",
-  "last_attempt_at_utc": "2026-07-11T04:48:36.378265Z",
+  "last_attempt_at_utc": "2026-07-11T11:50:27.087944Z",
   "last_attempt_status": "blocked",
   "last_attempt_reason": "0 of 24 targets were confirmed; source checks were blocked or did not return a current price.",
   "cadence_minutes": 1440,

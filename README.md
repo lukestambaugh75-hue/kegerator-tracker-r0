@@ -62,4 +62,4 @@ Generated email payloads are addressed exactly to:
 
 No CC/BCC. This repo generates `out/latest-email.json`; the builder refuses any alternate dashboard URL or recipient set. Sending uses the approved signed-in Chrome/Gmail browser route so it does not depend on the Gmail connector OAuth scope. Before sending, verify the two recipient chips, no CC/BCC, subject, body, dashboard link, and a passing audience guard.
 
-The automation mirror lives at `automation/kegerator-tracker-email.toml`. It is marked `READY_TO_REGISTER` because Codex.app scheduled jobs are registered in the app UI, not from this repo.
+The automation mirror lives at `automation/kegerator-tracker-email.toml`. Its status reflects the Codex.app scheduled job: `ACTIVE` after registration, or `READY_TO_REGISTER` before the app job exists.

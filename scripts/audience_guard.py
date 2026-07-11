@@ -855,7 +855,7 @@ def validate_email_payload(
 
 
 def validate_automation_mirror(text: str) -> None:
-    """Validate the inactive Codex automation mirror without changing installed state."""
+    """Validate the Codex automation mirror without changing installed state."""
     addresses = {value.casefold() for value in EMAIL_RE.findall(text)}
     if addresses != {value.casefold() for value in EXPECTED_RECIPIENTS}:
         raise AudienceBoundaryError(
@@ -863,8 +863,8 @@ def validate_automation_mirror(text: str) -> None:
         )
     if "scripts/audience_guard.py" not in text:
         raise AudienceBoundaryError("automation mirror must run scripts/audience_guard.py")
-    if "READY_TO_REGISTER" not in text:
-        raise AudienceBoundaryError("automation mirror must remain inactive (READY_TO_REGISTER)")
+    if not re.search(r'^status\s*=\s*"(?:ACTIVE|READY_TO_REGISTER)"\s*$', text, re.MULTILINE):
+        raise AudienceBoundaryError("automation mirror status must be ACTIVE or READY_TO_REGISTER")
     if "no CC/BCC" not in text and "Do not add CC or BCC" not in text:
         raise AudienceBoundaryError("automation mirror must explicitly keep CC/BCC empty")
     for value in _absolute_urls(text):

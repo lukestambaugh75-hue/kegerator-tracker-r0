@@ -26,8 +26,8 @@ Required run order:
 10. After the email attempt is complete, stop and wait for the next scheduled run.
 
 Do not purchase anything or contact retailers. Confirm final cart total, tax, pickup/delivery timing, seller identity, keg fit, and garage ventilation before buying."""
-status = "READY_TO_REGISTER"
-rrule = "DTSTART;TZID=America/Chicago:20260705T060000\nRRULE:FREQ=DAILY;BYHOUR=6;BYMINUTE=0;BYSECOND=0"
+status = "ACTIVE"
+rrule = "RRULE:FREQ=DAILY;BYHOUR=6;BYMINUTE=0;BYSECOND=0"
 model = "gpt-5.5"
 reasoning_effort = "high"
 execution_environment = "local"

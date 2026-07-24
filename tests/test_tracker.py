@@ -699,6 +699,41 @@ def test_direct_page_requires_matched_structured_product_offer(monkeypatch):
     assert refresh.try_live_price(row, offline=False) == (843.99, "parsed")
 
 
+def test_structured_product_price_matches_bounded_model_in_product_name():
+    from scripts.refresh import parse_structured_product_price
+
+    product = {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "name": "K309B-1 Full Size Digital Kegerator - Black Door - D System",
+        "sku": "MPK309B-1",
+        "offers": {"@type": "Offer", "price": "914.55", "priceCurrency": "USD"},
+    }
+    adjacent_model = {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "name": "K309B-10 Full Size Digital Kegerator",
+        "offers": {"@type": "Offer", "price": "1114.55", "priceCurrency": "USD"},
+    }
+
+    assert parse_structured_product_price(jsonld_page(product), "K309B-1") == 914.55
+    assert parse_structured_product_price(jsonld_page(adjacent_model), "K309B-1") is None
+
+
+def test_structured_product_price_matches_kegco_manufacturer_prefixed_sku():
+    from scripts.refresh import parse_structured_product_price
+
+    product = {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "name": "24 Wide Dual Tap All Stainless Steel Outdoor BuiltIn Right Hinge Kegerator with Kit",
+        "sku": "MPHK38SSU-2",
+        "offers": {"@type": "Offer", "price": "1822.01", "priceCurrency": "USD"},
+    }
+
+    assert parse_structured_product_price(jsonld_page(product), "HK38SSU-2") == 1822.01
+
+
 def test_structured_price_stays_bound_to_matched_product_own_offer(monkeypatch):
     from scripts import refresh
 

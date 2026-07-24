@@ -274,14 +274,25 @@ def _normalized_dedicated_identity(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value).casefold())
 
 
+def _is_kegco_manufacturer_sku(value: object, expected_model: object) -> bool:
+    normalized = _normalized_dedicated_identity(value)
+    expected = _normalized_dedicated_identity(expected_model)
+    return bool(normalized and expected and normalized == f"mp{expected}")
+
+
 def _has_exact_dedicated_identity(product: dict, expected_model: object) -> bool:
     expected = _normalized_dedicated_identity(expected_model)
     if not expected:
         return False
-    return any(
+    exact_match = any(
         _normalized_dedicated_identity(product.get(field)) == expected
         for field in ("model", "mpn", "sku", "productID")
     )
+    if exact_match:
+        return True
+    if _is_kegco_manufacturer_sku(product.get("sku"), expected_model):
+        return True
+    return False
 
 
 def _finite_positive_price(value: object) -> float | None:

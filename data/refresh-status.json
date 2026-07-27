@@ -1,8 +1,8 @@
 {
   "data_refreshed_at_utc": "2026-07-04T12:00:00Z",
-  "last_attempt_at_utc": "2026-07-27T11:01:25.720672Z",
+  "last_attempt_at_utc": "2026-07-27T13:37:20.100885Z",
   "last_attempt_status": "partial",
-  "last_attempt_reason": "2 of 24 targets were confirmed; 22 did not return current evidence.",
+  "last_attempt_reason": "4 of 24 targets were confirmed; 20 did not return current evidence.",
   "cadence_minutes": 1440,
   "grace_minutes": 180,
   "timezone": "America/Chicago",

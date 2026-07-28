@@ -1,3 +1,5 @@
+# Repository documentation mirror only. Do not copy this file over the live
+# scheduler or treat its status field as proof of live scheduler state.
 version = 1
 id = "kegerator-tracker-email"
 kind = "cron"
@@ -23,11 +25,12 @@ Required run order:
 7. If refresh evidence is blocked, partial, or failed, keep receipt `unverified`, run `/usr/bin/python3 scripts/run_evidence.py finish --outcome blocked`, and do not send. Otherwise continue.
 8. Run `/usr/bin/python3 scripts/run_evidence.py deployment`. Retry only for ordinary Pages propagation. The recorder itself must fetch every canonical public URL and compare exact response bytes to Git blobs from the bound result SHA while rechecking the approved live origin.
 9. Bind the one canonical payload with `/usr/bin/python3 scripts/run_evidence.py payload --payload out/latest-email.json`. This rejects extra fields, alternate serialization, stale generation time, changed content, source drift, or anything other than the deterministic fresh payload.
-10. Read `out/latest-email.json` and make at most one Gmail send attempt using the signed-in Chrome/Gmail browser route. Address it exactly to `lukestambaugh75@gmail.com` and `devin.mullen89@gmail.com`, with no CC/BCC, using the generated subject and body. Include the public dashboard link `https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/`.
-11. Before that one attempt, visibly verify the two recipient chips, no CC/BCC, subject, body, dashboard link, and the recorded passing audience guard. If the Gmail connector reports missing OAuth scopes, use the already approved signed-in Chrome/Gmail browser route; do not repair the connector during the run and do not retry the send.
-12. This repository has no trusted external receipt adapter. Detached JSON, screenshots, or AI-authored observations cannot verify delivery. Receipt must remain `unverified`; after the one attempt run `/usr/bin/python3 scripts/run_evidence.py finish --outcome delivery_unverified`. Never claim `delivered`.
-13. If an external command fails after start, run `scripts/run_evidence.py finalize-failure --stage <bounded-stage> --reason-code <bounded-code>` before stopping. Adapter-owned command failures finalize automatically except a first verification failure, which stays open only for the one allowlisted repair decision.
-14. After the terminal outcome is recorded, stop and wait for the next scheduled run.
+10. Immediately before opening the send surface, run `/usr/bin/python3 scripts/run_evidence.py pre-send --payload out/latest-email.json`. It must revalidate the exact recorded bytes, generation age, current Git source blobs, clean bound result, live origin, and exact two-recipient/no-CC/no-BCC boundary. Do not send if this command fails or if more than five minutes elapsed since payload binding.
+11. Read `out/latest-email.json` and make at most one Gmail send attempt using the signed-in Chrome/Gmail browser route. Address it exactly to `lukestambaugh75@gmail.com` and `devin.mullen89@gmail.com`, with no CC/BCC, using the generated subject and body. Include the public dashboard link `https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/`.
+12. Before that one attempt, visibly verify the two recipient chips, no CC/BCC, subject, body, dashboard link, and the recorded passing audience guard. If the Gmail connector reports missing OAuth scopes, use the already approved signed-in Chrome/Gmail browser route; do not repair the connector during the run and do not retry the send.
+13. This repository has no trusted external receipt adapter. Detached JSON, screenshots, or AI-authored observations cannot verify delivery. Receipt must remain `unverified`; within 30 minutes of pre-send validation and after the one attempt, run `/usr/bin/python3 scripts/run_evidence.py finish --outcome delivery_unverified`. Finish revalidates the bound payload, Git result, and live origin and must fail on post-bind drift. Never claim `delivered`.
+14. If an external command fails after start, run `scripts/run_evidence.py finalize-failure --stage <bounded-stage> --reason-code <bounded-code>` before stopping. Adapter-owned command failures finalize automatically except a first verification failure, which stays open only for the one allowlisted repair decision.
+15. After the terminal outcome is recorded, stop and wait for the next scheduled run.
 
 Do not purchase anything or contact retailers. Confirm final cart total, tax, pickup/delivery timing, seller identity, keg fit, and garage ventilation before buying."""
 status = "ACTIVE"

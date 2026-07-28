@@ -6,6 +6,8 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -16,6 +18,7 @@ START = datetime(2026, 7, 28, 12, 0, tzinfo=timezone.utc)
 ATTEMPT = datetime(2026, 7, 28, 12, 1, tzinfo=timezone.utc)
 AFTER = datetime(2026, 7, 28, 12, 2, tzinfo=timezone.utc)
 PAYLOAD_AT = datetime(2026, 7, 28, 12, 3, tzinfo=timezone.utc)
+PRE_SEND_AT = datetime(2026, 7, 28, 12, 3, 30, tzinfo=timezone.utc)
 FINISH = datetime(2026, 7, 28, 12, 4, tzinfo=timezone.utc)
 ORIGIN_URL = "https://github.com/lukestambaugh75-hue/kegerator-tracker-r0.git"
 
@@ -100,12 +103,61 @@ def evidence_repo(tmp_path: Path) -> Path:
         "2026-07-27,Kegco,K309B-1,Home Depot,800,900,https://example.com/item,confirmed\n",
         encoding="utf-8",
     )
-    (root / ".gitignore").write_text("out/\n", encoding="utf-8")
+    (root / ".gitignore").write_text(
+        ".DS_Store\n.cache/\n__pycache__/\n.pytest_cache/\nout/\n*.pyc\n",
+        encoding="utf-8",
+    )
     (root / "Makefile").write_text("verify-current:\n\t@true\n", encoding="utf-8")
     (root / "scripts").mkdir()
-    source_scripts = Path(__file__).resolve().parents[1] / "scripts"
-    shutil.copy2(source_scripts / "repair_history.py", root / "scripts/repair_history.py")
-    shutil.copy2(source_scripts / "refresh.py", root / "scripts/refresh.py")
+    source_root = Path(__file__).resolve().parents[1]
+    for relative in (
+        "scripts/audience_guard.py",
+        "scripts/refresh.py",
+        "scripts/refresh_state.py",
+        "scripts/repair_history.py",
+        "scripts/run_evidence.py",
+        "tests/test_run_evidence.py",
+        "tests/test_tracker.py",
+        "tools/build_email.py",
+    ):
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_root / relative, destination)
+    (root / "scripts/check_public_pages.py").write_text(
+        '''from __future__ import annotations
+import json
+from scripts.refresh_state import build_payload_source_identity
+
+PUBLIC_URL = "https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/"
+DEPLOYED_PATHS = ("index.html",)
+
+def verify_public_deployment(root, *, expected_sha):
+    listings = json.loads((root / "data/listings.json").read_text())
+    specs = json.loads((root / "data/specs.json").read_text())
+    status = json.loads((root / "data/refresh-status.json").read_text())
+    identity = build_payload_source_identity(listings, specs, status)
+    origin = {
+        "repository": "lukestambaugh75-hue/kegerator-tracker-r0",
+        "fetch_url": "https://github.com/lukestambaugh75-hue/kegerator-tracker-r0.git",
+        "push_url": "https://github.com/lukestambaugh75-hue/kegerator-tracker-r0.git",
+        "live_main_sha": expected_sha,
+    }
+    proof = {
+        "result_sha": expected_sha,
+        "origin_main_sha": expected_sha,
+        "source_sha": identity["source_sha256"],
+        "bundle_marker_sha256": "b" * 64,
+        "files": {"index.html": "a" * 64},
+        "public_url": PUBLIC_URL,
+        "public_state": "Fresh",
+        "data_refreshed_at_utc": identity["data_refreshed_at_utc"],
+        "fetches": {"index.html": {"url": PUBLIC_URL, "final_url": PUBLIC_URL, "status": 200, "sha256": "a" * 64}},
+        "origin": origin,
+    }
+    return {"state": "Fresh", "data_refreshed_at_utc": identity["data_refreshed_at_utc"]}, proof
+''',
+        encoding="utf-8",
+    )
     _run(root, "init", "-b", "main")
     _run(root, "config", "user.name", "Test")
     _run(root, "config", "user.email", "test@example.com")
@@ -122,7 +174,14 @@ def evidence_repo(tmp_path: Path) -> Path:
         "history.csv",
         "index.html",
         "scripts/refresh.py",
+        "scripts/refresh_state.py",
         "scripts/repair_history.py",
+        "scripts/audience_guard.py",
+        "scripts/check_public_pages.py",
+        "scripts/run_evidence.py",
+        "tests/test_run_evidence.py",
+        "tests/test_tracker.py",
+        "tools/build_email.py",
     )
     _run(root, "commit", "-m", "initial")
     return root
@@ -270,6 +329,7 @@ def _through_deployment(root: Path, state_path: Path) -> dict:
         state_path,
         now=AFTER,
         verifier=_fake_deployment,
+        origin_reader=_origin_for_head,
     )
 
 
@@ -283,6 +343,28 @@ def _write_current_payload(root: Path, *, now: datetime = PAYLOAD_AT) -> Path:
     path = root / "out/latest-email.json"
     write_payload(path, payload)
     return path
+
+
+def _through_pre_send(root: Path, state_path: Path) -> Path:
+    from scripts.run_evidence import record_payload_evidence, record_pre_send_validation
+
+    _through_deployment(root, state_path)
+    payload_path = _write_current_payload(root)
+    record_payload_evidence(
+        root,
+        state_path,
+        payload_path,
+        now=PAYLOAD_AT,
+        origin_reader=_origin_for_head,
+    )
+    record_pre_send_validation(
+        root,
+        state_path,
+        payload_path,
+        now=PRE_SEND_AT,
+        origin_reader=_origin_for_head,
+    )
+    return payload_path
 
 
 def test_adapter_executes_one_refresh_and_binds_actual_target_inventory(evidence_repo: Path):
@@ -487,6 +569,7 @@ def test_payload_requires_exact_schema_content_serialization_and_freshness(
             state_path,
             payload_path,
             now=PAYLOAD_AT,
+            origin_reader=_origin_for_head,
         )
 
 
@@ -501,6 +584,7 @@ def test_exact_current_payload_is_bound_to_run_source_and_recipients(evidence_re
         state_path,
         payload_path,
         now=PAYLOAD_AT,
+        origin_reader=_origin_for_head,
     )
     evidence = state["stages"]["payload"]["evidence"]
     assert evidence["to"] == ["lukestambaugh75@gmail.com", "devin.mullen89@gmail.com"]
@@ -514,13 +598,27 @@ def test_detached_receipt_is_never_trusted_and_delivered_is_unrepresentable(evid
         RunEvidenceError,
         finish_run,
         record_payload_evidence,
+        record_pre_send_validation,
         record_receipt_evidence,
     )
 
     state_path = _start(evidence_repo)
     _through_deployment(evidence_repo, state_path)
     payload_path = _write_current_payload(evidence_repo)
-    record_payload_evidence(evidence_repo, state_path, payload_path, now=PAYLOAD_AT)
+    record_payload_evidence(
+        evidence_repo,
+        state_path,
+        payload_path,
+        now=PAYLOAD_AT,
+        origin_reader=_origin_for_head,
+    )
+    record_pre_send_validation(
+        evidence_repo,
+        state_path,
+        payload_path,
+        now=PRE_SEND_AT,
+        origin_reader=_origin_for_head,
+    )
     forged_receipt = evidence_repo / "out/receipt.json"
     _write_json(forged_receipt, {"receipt_id": "self-authored", "status": "sent"})
     with pytest.raises(RunEvidenceError, match="no trusted external receipt"):
@@ -562,6 +660,7 @@ def test_deployment_recorder_calls_verifier_itself_and_records_fetch_proof(evide
         state_path,
         now=AFTER,
         verifier=verifier,
+        origin_reader=_origin_for_head,
     )
     proof = state["stages"]["deployment"]["evidence"]
     assert calls == [state["result_sha"]]
@@ -675,7 +774,7 @@ def test_state_path_must_be_canonical_ignored_and_not_a_symlink(evidence_repo: P
         )
     outside = tmp_path / "outside.json"
     outside.write_text("preserve\n", encoding="utf-8")
-    (evidence_repo / "out").mkdir()
+    (evidence_repo / "out").mkdir(exist_ok=True)
     (evidence_repo / "out/run-state.json").symlink_to(outside)
     with pytest.raises(RunEvidenceError, match="symlink"):
         create_run_state(
@@ -962,6 +1061,59 @@ def test_terminal_state_is_archived_before_next_run(evidence_repo: Path):
     assert state["run_id"] == "second-run"
 
 
+def test_prior_terminal_schema_is_archived_but_prior_running_lane_is_preserved(
+    evidence_repo: Path,
+):
+    from scripts.run_evidence import RunEvidenceError, create_run_state, finalize_failure
+
+    state_path = _start(evidence_repo, run_id="legacy-terminal")
+    finalize_failure(
+        evidence_repo,
+        state_path,
+        "legacy",
+        "legacy_terminal",
+        now=AFTER,
+        origin_reader=_origin_for_head,
+    )
+    legacy = json.loads(state_path.read_text(encoding="utf-8"))
+    legacy["schema_version"] = 2
+    legacy["stage_order"].remove("pre_send")
+    legacy["stages"].pop("pre_send")
+    _write_json(state_path, legacy)
+    next_state = create_run_state(
+        evidence_repo,
+        state_path,
+        "after-legacy",
+        "kegerator-tracker-email",
+        "scheduled-email",
+        owner_pid=os.getpid(),
+        now=PAYLOAD_AT,
+        origin_reader=_origin_for_head,
+    )
+    assert next_state["schema_version"] == 3
+    archives = list((evidence_repo / "out/run-state-archive").glob("legacy-terminal-*.json"))
+    assert len(archives) == 1
+    assert json.loads(archives[0].read_text(encoding="utf-8"))["schema_version"] == 2
+
+    running_legacy = json.loads(state_path.read_text(encoding="utf-8"))
+    running_legacy["schema_version"] = 2
+    running_legacy["stage_order"].remove("pre_send")
+    running_legacy["stages"].pop("pre_send")
+    _write_json(state_path, running_legacy)
+    with pytest.raises(RunEvidenceError, match="invalid or unfinished"):
+        create_run_state(
+            evidence_repo,
+            state_path,
+            "must-not-replace-running",
+            "kegerator-tracker-email",
+            "scheduled-email",
+            owner_pid=os.getpid(),
+            now=FINISH,
+            origin_reader=_origin_for_head,
+        )
+    assert json.loads(state_path.read_text(encoding="utf-8"))["run_id"] == "after-legacy"
+
+
 def test_origin_identity_is_required_at_start_result_and_finish(evidence_repo: Path):
     from scripts.run_evidence import RunEvidenceError, create_run_state, finish_run
 
@@ -985,9 +1137,22 @@ def test_origin_identity_is_required_at_start_result_and_finish(evidence_repo: P
     state_path = _start(evidence_repo)
     _through_deployment(evidence_repo, state_path)
     payload_path = _write_current_payload(evidence_repo)
-    from scripts.run_evidence import record_payload_evidence
+    from scripts.run_evidence import record_payload_evidence, record_pre_send_validation
 
-    record_payload_evidence(evidence_repo, state_path, payload_path, now=PAYLOAD_AT)
+    record_payload_evidence(
+        evidence_repo,
+        state_path,
+        payload_path,
+        now=PAYLOAD_AT,
+        origin_reader=_origin_for_head,
+    )
+    record_pre_send_validation(
+        evidence_repo,
+        state_path,
+        payload_path,
+        now=PRE_SEND_AT,
+        origin_reader=_origin_for_head,
+    )
 
     def drifted_origin(root: Path, observed_at: datetime):
         value = _origin_for_head(root, observed_at)
@@ -1004,14 +1169,483 @@ def test_origin_identity_is_required_at_start_result_and_finish(evidence_repo: P
         )
 
 
+def test_pre_send_is_mandatory_and_finish_rejects_post_bind_payload_drift(
+    evidence_repo: Path,
+):
+    from scripts.run_evidence import (
+        RunEvidenceError,
+        finish_run,
+        record_payload_evidence,
+        record_pre_send_validation,
+    )
+
+    state_path = _start(evidence_repo)
+    _through_deployment(evidence_repo, state_path)
+    payload_path = _write_current_payload(evidence_repo)
+    record_payload_evidence(
+        evidence_repo,
+        state_path,
+        payload_path,
+        now=PAYLOAD_AT,
+        origin_reader=_origin_for_head,
+    )
+    with pytest.raises(RunEvidenceError, match="pre_send"):
+        finish_run(
+            evidence_repo,
+            state_path,
+            "delivery_unverified",
+            now=FINISH,
+            origin_reader=_origin_for_head,
+        )
+    record_pre_send_validation(
+        evidence_repo,
+        state_path,
+        payload_path,
+        now=PRE_SEND_AT,
+        origin_reader=_origin_for_head,
+    )
+    original = payload_path.read_bytes()
+    payload_path.write_bytes(original + b" ")
+    with pytest.raises(RunEvidenceError, match="payload|serialization|drift"):
+        finish_run(
+            evidence_repo,
+            state_path,
+            "delivery_unverified",
+            now=FINISH,
+            origin_reader=_origin_for_head,
+        )
+
+
+def test_pre_send_rejects_old_binding_and_dirty_or_moved_result(evidence_repo: Path):
+    from scripts.run_evidence import RunEvidenceError, record_payload_evidence, record_pre_send_validation
+
+    state_path = _start(evidence_repo)
+    _through_deployment(evidence_repo, state_path)
+    payload_path = _write_current_payload(evidence_repo)
+    record_payload_evidence(
+        evidence_repo,
+        state_path,
+        payload_path,
+        now=PAYLOAD_AT,
+        origin_reader=_origin_for_head,
+    )
+    with pytest.raises(RunEvidenceError, match="too old"):
+        record_pre_send_validation(
+            evidence_repo,
+            state_path,
+            payload_path,
+            now=PAYLOAD_AT + timedelta(minutes=6),
+            origin_reader=_origin_for_head,
+        )
+    (evidence_repo / "data/listings.json").write_text("[]\n", encoding="utf-8")
+    with pytest.raises(RunEvidenceError, match="clean|drift|Git blob"):
+        record_pre_send_validation(
+            evidence_repo,
+            state_path,
+            payload_path,
+            now=PRE_SEND_AT,
+            origin_reader=_origin_for_head,
+        )
+
+
+def test_full_start_manifest_and_result_changed_path_allowlist_are_enforced(
+    evidence_repo: Path,
+):
+    from scripts.run_evidence import RunEvidenceError, execute_refresh_once
+
+    state_path = _start(evidence_repo)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    identity = state["stages"]["preflight"]["evidence"]["input_identity"]
+    assert identity["tracked_manifest"]
+    assert set(identity["fixed_command_blobs"]) >= {
+        "scripts/run_evidence.py",
+        "scripts/refresh.py",
+        "tools/build_email.py",
+    }
+    (evidence_repo / "scripts/refresh.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    with pytest.raises(RunEvidenceError, match="drift|differs"):
+        execute_refresh_once(
+            evidence_repo,
+            state_path,
+            now=ATTEMPT,
+            runner=_refresh_runner(evidence_repo),
+        )
+
+    _run(evidence_repo, "restore", "scripts/refresh.py")
+    execute_refresh_once(
+        evidence_repo,
+        state_path,
+        now=ATTEMPT,
+        runner=_refresh_runner(evidence_repo),
+    )
+    from scripts.run_evidence import record_result_sha, run_local_verification
+
+    run_local_verification(
+        evidence_repo,
+        state_path,
+        now=AFTER,
+        runner=_verification_runner(),
+    )
+    (evidence_repo / "index.html").write_text("<html>unexpected code change</html>\n", encoding="utf-8")
+    _run(
+        evidence_repo,
+        "add",
+        "data/listings.json",
+        "data/refresh-status.json",
+        "history.csv",
+        "index.html",
+    )
+    _run(evidence_repo, "commit", "-m", "malicious mixed result")
+    with pytest.raises(RunEvidenceError, match="allowlist|immutable"):
+        record_result_sha(
+            evidence_repo,
+            state_path,
+            now=AFTER,
+            origin_reader=_origin_for_head,
+        )
+
+
+def test_result_provenance_rejects_commit_unrelated_to_run_start(evidence_repo: Path):
+    import scripts.run_evidence as evidence
+
+    state_path = _start(evidence_repo)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    tree = _run(evidence_repo, "rev-parse", "HEAD^{tree}")
+    unrelated = subprocess.run(
+        ["git", "-C", str(evidence_repo), "commit-tree", tree],
+        input="unrelated\n",
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    state["result_sha"] = unrelated
+    with pytest.raises(evidence.RunEvidenceError, match="not an ancestor"):
+        evidence._assert_result_provenance(evidence_repo, state)
+
+
+def test_flock_serializes_concurrent_refresh_and_preserves_exactly_once(
+    evidence_repo: Path,
+):
+    from scripts.run_evidence import execute_refresh_once
+
+    state_path = _start(evidence_repo)
+    entered = threading.Event()
+    release = threading.Event()
+    second_runner_called = threading.Event()
+    results: list[object] = []
+    base_runner = _refresh_runner(evidence_repo)
+
+    def slow_runner(command, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5)
+        return base_runner(command, **kwargs)
+
+    def forbidden_runner(command, **kwargs):
+        second_runner_called.set()
+        return base_runner(command, **kwargs)
+
+    def invoke(runner):
+        try:
+            results.append(
+                execute_refresh_once(
+                    evidence_repo,
+                    state_path,
+                    now=ATTEMPT,
+                    runner=runner,
+                )
+            )
+        except Exception as exc:
+            results.append(exc)
+
+    first = threading.Thread(target=invoke, args=(slow_runner,))
+    second = threading.Thread(target=invoke, args=(forbidden_runner,))
+    first.start()
+    assert entered.wait(timeout=5)
+    second.start()
+    time.sleep(0.2)
+    assert not second_runner_called.is_set()
+    release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert not first.is_alive() and not second.is_alive()
+    assert not second_runner_called.is_set()
+    assert sum(isinstance(value, dict) for value in results) == 1
+    assert any("exactly once" in str(value) for value in results if isinstance(value, Exception))
+
+
+def test_lane_lock_rejects_symlink_and_refresh_outcome_is_exclusive(
+    evidence_repo: Path,
+    tmp_path: Path,
+):
+    from scripts.refresh import write_json_exclusive
+    from scripts.run_evidence import RunEvidenceError, create_run_state
+
+    out = evidence_repo / "out"
+    out.mkdir()
+    outside = tmp_path / "outside.lock"
+    outside.write_text("preserve", encoding="utf-8")
+    (out / "run-evidence.lock").symlink_to(outside)
+    with pytest.raises((RunEvidenceError, OSError), match="symlink|regular|loop"):
+        create_run_state(
+            evidence_repo,
+            out / "run-state.json",
+            "run-lock",
+            "kegerator-tracker-email",
+            "scheduled-email",
+            owner_pid=os.getpid(),
+            now=START,
+            origin_reader=_origin_for_head,
+        )
+    assert outside.read_text(encoding="utf-8") == "preserve"
+
+    outcome = tmp_path / "outcome.json"
+    write_json_exclusive(outcome, {"attempt": 1})
+    original = outcome.read_bytes()
+    with pytest.raises(FileExistsError):
+        write_json_exclusive(outcome, {"attempt": 2})
+    assert outcome.read_bytes() == original
+
+
+def test_interrupted_verification_is_persisted_then_recovery_marks_review_required(
+    evidence_repo: Path,
+):
+    from scripts.run_evidence import RunEvidenceError, execute_refresh_once, recover_stale_run, run_local_verification
+
+    state_path = _start(evidence_repo)
+    execute_refresh_once(
+        evidence_repo,
+        state_path,
+        now=ATTEMPT,
+        runner=_refresh_runner(evidence_repo),
+    )
+
+    def crash(command, **kwargs):
+        raise RuntimeError("simulated process loss")
+
+    with pytest.raises(RuntimeError, match="process loss"):
+        run_local_verification(evidence_repo, state_path, now=AFTER, runner=crash)
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["stages"]["verification"]["status"] == "in_progress"
+    assert persisted["stages"]["verification"]["evidence"]["attempts"][0]["status"] == "in_progress"
+    recovered = recover_stale_run(
+        evidence_repo,
+        state_path,
+        "run-20260728",
+        now=START + timedelta(hours=13),
+        origin_reader=_origin_for_head,
+        owner_probe=lambda pid: None,
+    )
+    assert recovered["status"] == "failed"
+    assert recovered["stages"]["verification"]["status"] == "review_required"
+    assert recovered["stages"]["blocker"]["status"] == "recorded"
+
+
+def test_interrupted_repair_consumes_attempt_before_spawn_and_requires_review(
+    evidence_repo: Path,
+):
+    from scripts.run_evidence import (
+        execute_refresh_once,
+        execute_repair,
+        finalize_failure,
+        propose_repair,
+        run_local_verification,
+    )
+
+    (evidence_repo / "history.csv").write_text(
+        "date,brand,model,retailer,price,list_price,source,data_quality\n"
+        "2026-07-27,Kegco,K309B-1,Home Depot,800,900,https://example.com/a,confirmed\n"
+        "2026-07-26,Kegco,K309B-1,Home Depot,810,900,https://example.com/b,estimated\n",
+        encoding="utf-8",
+    )
+    _run(evidence_repo, "add", "history.csv")
+    _run(evidence_repo, "commit", "-m", "seed interrupted repair")
+    state_path = _start(evidence_repo)
+    execute_refresh_once(
+        evidence_repo,
+        state_path,
+        now=ATTEMPT,
+        runner=_refresh_runner(evidence_repo),
+    )
+    with pytest.raises(Exception):
+        run_local_verification(
+            evidence_repo,
+            state_path,
+            now=AFTER,
+            runner=_verification_runner(7),
+        )
+    propose_repair(evidence_repo, state_path, "history-prune", now=AFTER)
+
+    def crash(command, **kwargs):
+        raise RuntimeError("repair process lost")
+
+    with pytest.raises(RuntimeError, match="repair process lost"):
+        execute_repair(
+            evidence_repo,
+            state_path,
+            "history-prune",
+            now=AFTER,
+            runner=crash,
+        )
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["stages"]["repair"]["status"] == "in_progress"
+    assert persisted["stages"]["repair"]["evidence"]["attempts_used"] == 1
+    terminal = finalize_failure(
+        evidence_repo,
+        state_path,
+        "repair",
+        "repair_process_lost",
+        now=PAYLOAD_AT,
+        origin_reader=_origin_for_head,
+    )
+    assert terminal["status"] == "failed"
+    assert terminal["stages"]["repair"]["status"] == "review_required"
+    assert terminal["stages"]["repair"]["evidence"]["attempts_used"] == 1
+
+
+def test_direct_scheduled_deployment_and_payload_cli_establish_repo_root(
+    evidence_repo: Path,
+):
+    state_path = _start(evidence_repo)
+    _refresh_and_verify(evidence_repo, state_path)
+    _commit_and_bind(evidence_repo, state_path)
+    fake_bin = evidence_repo / "out/test-bin"
+    fake_bin.mkdir(parents=True)
+    head = _run(evidence_repo, "rev-parse", "HEAD")
+    git_wrapper = fake_bin / "git"
+    git_wrapper.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$3\" = \"ls-remote\" ]; then\n"
+        f"  printf '%s\\trefs/heads/main\\n' '{head}'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exec /usr/bin/git \"$@\"\n",
+        encoding="utf-8",
+    )
+    git_wrapper.chmod(0o700)
+    env = dict(os.environ)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("PYTHONPATH", None)
+    deployment = subprocess.run(
+        ["/usr/bin/python3", "scripts/run_evidence.py", "deployment"],
+        cwd=evidence_repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert deployment.returncode == 0, deployment.stderr
+    assert "deployment=passed" in deployment.stdout
+
+    _write_current_payload(evidence_repo, now=datetime.now(timezone.utc))
+    payload = subprocess.run(
+        [
+            "/usr/bin/python3",
+            "scripts/run_evidence.py",
+            "payload",
+            "--payload",
+            "out/latest-email.json",
+        ],
+        cwd=evidence_repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert payload.returncode == 0, payload.stderr
+    assert "payload=passed" in payload.stdout
+    pre_send = subprocess.run(
+        [
+            "/usr/bin/python3",
+            "scripts/run_evidence.py",
+            "pre-send",
+            "--payload",
+            "out/latest-email.json",
+        ],
+        cwd=evidence_repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert pre_send.returncode == 0, pre_send.stderr
+    assert "pre_send=passed" in pre_send.stdout
+    finish = subprocess.run(
+        [
+            "/usr/bin/python3",
+            "scripts/run_evidence.py",
+            "finish",
+            "--outcome",
+            "delivery_unverified",
+        ],
+        cwd=evidence_repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert finish.returncode == 0, finish.stderr
+    assert "status=delivery_unverified" in finish.stdout
+    assert "receipt=unverified" in finish.stdout
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["status"] == "delivery_unverified"
+    assert state["stages"]["payload"]["status"] == "passed"
+    assert state["stages"]["payload"]["evidence"]["origin"]["live_main_sha"] == head
+
+
+def test_state_schema_rejects_illegal_status_evidence_and_terminal_without_blocker(
+    evidence_repo: Path,
+):
+    import scripts.run_evidence as evidence
+
+    state_path = _start(evidence_repo)
+    original = json.loads(state_path.read_text(encoding="utf-8"))
+    illegal = copy.deepcopy(original)
+    illegal["stages"]["verification"]["status"] = "maybe"
+    with pytest.raises(evidence.RunEvidenceError, match="illegal status"):
+        evidence._validate_state_shape(illegal)
+    extra = copy.deepcopy(original)
+    extra["stages"]["receipt"]["evidence"]["self_asserted"] = True
+    with pytest.raises(evidence.RunEvidenceError, match="receipt evidence"):
+        evidence._validate_state_shape(extra)
+    no_blocker = copy.deepcopy(original)
+    no_blocker["status"] = "failed"
+    no_blocker["finished_at_utc"] = "2026-07-28T12:02:00Z"
+    no_blocker["origin_at_finish"] = _origin_for_head(evidence_repo, AFTER)
+    with pytest.raises(evidence.RunEvidenceError, match="blocker"):
+        evidence._validate_state_shape(no_blocker)
+
+
+def test_terminal_summary_prints_all_required_lane_signals(evidence_repo: Path, capsys):
+    import scripts.run_evidence as evidence
+
+    state_path = _start(evidence_repo)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    evidence._print_summary(state)
+    output = capsys.readouterr().out
+    for field in (
+        "freshness=pending",
+        "verification=pending",
+        "deployment=unverified",
+        "payload=unverified",
+        "blocker=clear",
+        "receipt=unverified",
+    ):
+        assert field in output
+
+
 def test_automation_contract_uses_owned_commands_and_never_claims_delivery():
     text = Path("automation/kegerator-tracker-email.toml").read_text(encoding="utf-8")
 
     assert "scripts/run_evidence.py refresh" in text
     assert "scripts/run_evidence.py verify" in text
     assert "scripts/run_evidence.py deployment" in text
+    assert "scripts/run_evidence.py pre-send" in text
     assert "scripts/run_evidence.py finish --outcome delivery_unverified" in text
     assert "scripts/run_evidence.py recover-stale" in text
     assert "scripts/refresh.py --outcome-path" not in text
     assert "finish --outcome delivered" not in text
     assert "Receipt must remain `unverified`" in text
+    assert "finish revalidates" in text.casefold()
+    assert "documentation mirror only" in text.casefold()
+    assert "do not copy this file over the live" in text.casefold()

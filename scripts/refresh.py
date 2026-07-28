@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import stat
 import tempfile
 import time
 import unicodedata
@@ -84,6 +85,26 @@ def write_json(path: Path, data) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+def write_json_exclusive(path: Path, data) -> None:
+    """Create one run outcome without replacing an earlier attempt record."""
+    path = Path(os.path.abspath(os.fspath(path)))
+    cursor = Path(path.anchor)
+    for part in path.parent.parts[1:]:
+        cursor = cursor / part
+        mode = cursor.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"exclusive outcome path must not contain symlinks: {cursor}")
+        if not stat.S_ISDIR(mode):
+            raise ValueError(f"exclusive outcome parent is not a directory: {cursor}")
+    payload = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def spec_key(brand: str, model: str) -> str:
@@ -547,20 +568,24 @@ def main() -> None:
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--outcome-path", type=Path)
     parser.add_argument("--run-id")
+    parser.add_argument("--exclusive-outcome", action="store_true")
     args = parser.parse_args()
+    if args.exclusive_outcome and (args.outcome_path is None or not args.run_id):
+        parser.error("--exclusive-outcome requires --outcome-path and --run-id")
     offline = args.offline or os.environ.get("KEG_TRACKER_OFFLINE") == "1"
     target_identity = build_refresh_target_identity(load_json(LISTINGS_PATH))
     result = run_refresh(now=utc_now(), offline=offline)
     if args.outcome_path:
-        write_json(
-            args.outcome_path,
-            {
-                **result,
-                "run_id": args.run_id,
-                "input_source_count": target_identity["source_count"],
-                "target_manifest_sha256": target_identity["target_manifest_sha256"],
-            },
-        )
+        outcome = {
+            **result,
+            "run_id": args.run_id,
+            "input_source_count": target_identity["source_count"],
+            "target_manifest_sha256": target_identity["target_manifest_sha256"],
+        }
+        if args.exclusive_outcome:
+            write_json_exclusive(args.outcome_path, outcome)
+        else:
+            write_json(args.outcome_path, outcome)
     print(
         f"refresh {result['status']}: {result['confirmed_count']} confirmed, "
         f"{result['failed_count']} failed; appended {result['history_appended']} history rows"

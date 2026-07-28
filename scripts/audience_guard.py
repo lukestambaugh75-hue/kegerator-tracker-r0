@@ -29,6 +29,18 @@ CANONICAL_DASHBOARD_URL = "https://lukestambaugh75-hue.github.io/kegerator-track
 CANONICAL_INDEX_PATH = Path("index.html")
 CANONICAL_INDEX_SHA256 = "26e5806df57cb4b933f9fc7a1f0139240fa7f2c6b00d8a8c0c39c5c3bb0794a0"
 EXPECTED_RECIPIENTS = ["lukestambaugh75@gmail.com", "devin.mullen89@gmail.com"]
+EMAIL_PAYLOAD_FIELDS = {
+    "to",
+    "cc",
+    "bcc",
+    "subject",
+    "body_text",
+    "body_html",
+    "dashboard_url",
+    "generated_at",
+    "refresh_state",
+    "source_identity",
+}
 ALLOWED_RETAIL_HOSTS = {
     "kegco.com",
     "www.kegco.com",
@@ -834,7 +846,11 @@ def validate_email_payload(
     *,
     expected_source_identity: dict | None = None,
 ) -> None:
-    """Validate exact recipients and all URL-bearing email fields."""
+    """Validate the exact deterministic payload schema and audience boundary."""
+    if not isinstance(payload, dict) or set(payload) != EMAIL_PAYLOAD_FIELDS:
+        raise AudienceBoundaryError(
+            f"email payload fields must be exactly {sorted(EMAIL_PAYLOAD_FIELDS)}"
+        )
     if payload.get("to") != EXPECTED_RECIPIENTS:
         raise AudienceBoundaryError(
             f"email recipients must be exactly {EXPECTED_RECIPIENTS}; got {payload.get('to')}"
@@ -845,6 +861,19 @@ def validate_email_payload(
         raise AudienceBoundaryError(
             f"email dashboard_url must be exactly {CANONICAL_DASHBOARD_URL}"
         )
+    for field in ("subject", "body_text", "body_html", "generated_at", "refresh_state"):
+        if not isinstance(payload.get(field), str) or not payload[field].strip():
+            raise AudienceBoundaryError(f"email {field} must be a non-empty string")
+    try:
+        generated_at = utc_iso(payload["generated_at"])
+    except ValueError as exc:
+        raise AudienceBoundaryError("email generated_at must be an aware UTC timestamp") from exc
+    if generated_at != payload["generated_at"]:
+        raise AudienceBoundaryError("email generated_at must use canonical UTC form")
+    if payload["refresh_state"] not in {"Fresh", "Due", "Stale", "Blocked", "Unknown"}:
+        raise AudienceBoundaryError("email refresh_state is invalid")
+    if not isinstance(payload.get("source_identity"), dict):
+        raise AudienceBoundaryError("email source_identity must be an object")
     allowed_urls = frozenset({CANONICAL_DASHBOARD_URL, *allowed_listing_urls})
     body_html = str(payload.get("body_html") or "")
     parser = _parse_html(body_html)
@@ -877,16 +906,21 @@ def validate_automation_mirror(text: str) -> None:
     for required in (
         "scripts/run_evidence.py start",
         "scripts/run_evidence.py refresh",
+        "scripts/run_evidence.py verify",
         "scripts/run_evidence.py result",
-        "scripts/check_public_pages.py --run-state",
+        "scripts/run_evidence.py deployment",
         "scripts/run_evidence.py payload",
-        "scripts/run_evidence.py receipt",
-        "make verify-current",
+        "scripts/run_evidence.py finish --outcome delivery_unverified",
+        "scripts/run_evidence.py recover-stale",
     ):
         if required not in text:
             raise AudienceBoundaryError(f"automation mirror missing evidence gate: {required}")
     if "make verify`" in text or "make verify," in text:
         raise AudienceBoundaryError("automation mirror must not run a second mutating refresh")
+    if "scripts/refresh.py --outcome-path" in text:
+        raise AudienceBoundaryError("automation mirror must let run_evidence own the one refresh")
+    if "finish --outcome delivered" in text:
+        raise AudienceBoundaryError("automation mirror cannot claim delivered without a trusted receipt")
     if not re.search(r'^status\s*=\s*"(?:ACTIVE|READY_TO_REGISTER)"\s*$', text, re.MULTILINE):
         raise AudienceBoundaryError("automation mirror status must be ACTIVE or READY_TO_REGISTER")
     if "no CC/BCC" not in text and "Do not add CC or BCC" not in text:

@@ -23,9 +23,19 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 try:
-    from .refresh_state import apply_refresh_outcome, parse_utc, utc_iso
+    from .refresh_state import (
+        apply_refresh_outcome,
+        build_refresh_target_identity,
+        parse_utc,
+        utc_iso,
+    )
 except ImportError:
-    from refresh_state import apply_refresh_outcome, parse_utc, utc_iso
+    from refresh_state import (
+        apply_refresh_outcome,
+        build_refresh_target_identity,
+        parse_utc,
+        utc_iso,
+    )
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -536,11 +546,21 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--outcome-path", type=Path)
+    parser.add_argument("--run-id")
     args = parser.parse_args()
     offline = args.offline or os.environ.get("KEG_TRACKER_OFFLINE") == "1"
+    target_identity = build_refresh_target_identity(load_json(LISTINGS_PATH))
     result = run_refresh(now=utc_now(), offline=offline)
     if args.outcome_path:
-        write_json(args.outcome_path, result)
+        write_json(
+            args.outcome_path,
+            {
+                **result,
+                "run_id": args.run_id,
+                "input_source_count": target_identity["source_count"],
+                "target_manifest_sha256": target_identity["target_manifest_sha256"],
+            },
+        )
     print(
         f"refresh {result['status']}: {result['confirmed_count']} confirmed, "
         f"{result['failed_count']} failed; appended {result['history_appended']} history rows"

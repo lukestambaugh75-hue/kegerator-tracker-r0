@@ -36,6 +36,12 @@ from scripts.refresh_state import (  # noqa: E402
 PUBLIC_URL = "https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/"
 PUBLIC_LISTINGS_URL = urljoin(PUBLIC_URL, "data/listings.json")
 PUBLIC_STATUS_URL = urljoin(PUBLIC_URL, "data/refresh-status.json")
+EXPECTED_ORIGIN_REPOSITORY = "lukestambaugh75-hue/kegerator-tracker-r0"
+ALLOWED_ORIGIN_URLS = {
+    "https://github.com/lukestambaugh75-hue/kegerator-tracker-r0.git",
+    "git@github.com:lukestambaugh75-hue/kegerator-tracker-r0.git",
+    "ssh://git@github.com/lukestambaugh75-hue/kegerator-tracker-r0.git",
+}
 DEPLOYED_PATHS = (
     "index.html",
     "assets/kegerator-hero.png",
@@ -47,10 +53,10 @@ DEPLOYED_PATHS = (
 COMMIT_RE = re.compile(r"[0-9a-f]{40,64}\Z")
 
 
-def fetch(url: str) -> tuple[int, bytes]:
+def fetch(url: str) -> tuple[int, bytes, str]:
     request = urllib.request.Request(url, headers={"User-Agent": "LukeKegeratorTracker/1.0"})
     with urllib.request.urlopen(request, timeout=20) as response:
-        return response.status, response.read()
+        return response.status, response.read(), response.geturl()
 
 
 def _sha256(raw: bytes) -> str:
@@ -68,6 +74,34 @@ def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
 
 def _git_text(root: Path, *args: str) -> str:
     return _git(root, *args).stdout.strip()
+
+
+def _git_bytes(root: Path, *args: str) -> bytes:
+    return subprocess.run(
+        ["git", "-C", os.fspath(root), *args],
+        capture_output=True,
+        check=True,
+    ).stdout
+
+
+def _live_origin(root: Path) -> dict:
+    fetch_url = _git_text(root, "remote", "get-url", "origin")
+    push_url = _git_text(root, "remote", "get-url", "--push", "origin")
+    if fetch_url not in ALLOWED_ORIGIN_URLS or push_url not in ALLOWED_ORIGIN_URLS:
+        raise AudienceBoundaryError("origin URL does not identify the approved Kegerator repository")
+    remote_line = _git_text(root, "ls-remote", "--exit-code", "origin", "refs/heads/main")
+    rows = [line.split() for line in remote_line.splitlines() if line.strip()]
+    if len(rows) != 1 or len(rows[0]) != 2 or rows[0][1] != "refs/heads/main":
+        raise AudienceBoundaryError("live origin/main identity is unavailable or ambiguous")
+    sha = rows[0][0]
+    if not COMMIT_RE.fullmatch(sha):
+        raise AudienceBoundaryError("live origin/main returned an invalid commit identity")
+    return {
+        "repository": EXPECTED_ORIGIN_REPOSITORY,
+        "fetch_url": fetch_url,
+        "push_url": push_url,
+        "live_main_sha": sha,
+    }
 
 
 def validate_deployment_bundle(
@@ -130,23 +164,36 @@ def verify_public_deployment(
     expected_sha = expected_sha or head_sha
     if expected_sha != head_sha:
         raise AudienceBoundaryError("local HEAD does not match the expected run result_sha")
-    remote_line = _git_text(root, "ls-remote", "--exit-code", "origin", "refs/heads/main")
-    origin_main_sha = remote_line.split()[0] if remote_line else ""
+    origin = _live_origin(root)
+    origin_main_sha = origin["live_main_sha"]
     local_files: dict[str, bytes] = {}
     for relative in DEPLOYED_PATHS:
         if _git(root, "ls-files", "--error-unmatch", "--", relative, check=False).returncode != 0:
             raise AudienceBoundaryError(f"deployment candidate is not tracked at HEAD: {relative}")
-        if _git(root, "diff", "--quiet", "HEAD", "--", relative, check=False).returncode != 0:
-            raise AudienceBoundaryError(f"deployment candidate has uncommitted drift: {relative}")
-        local_files[relative] = (root / relative).read_bytes()
+        local_files[relative] = _git_bytes(root, "show", f"{expected_sha}:{relative}")
     remote_files: dict[str, bytes] = {}
+    fetches: dict[str, dict] = {}
     for relative in DEPLOYED_PATHS:
-        status, raw = fetcher(urljoin(PUBLIC_URL, relative))
+        requested_url = urljoin(PUBLIC_URL, relative)
+        response = fetcher(requested_url)
+        if not isinstance(response, tuple) or len(response) != 3:
+            raise AudienceBoundaryError("public fetcher must return status, exact bytes, and final URL")
+        status, raw, final_url = response
         if status != 200:
             raise AudienceBoundaryError(f"unexpected public status {status}: {relative}")
+        if final_url != requested_url:
+            raise AudienceBoundaryError(f"public fetch redirected away from the canonical URL: {relative}")
+        if not isinstance(raw, bytes):
+            raise AudienceBoundaryError(f"public fetch did not return exact bytes: {relative}")
         remote_files[relative] = raw
+        fetches[relative] = {
+            "url": requested_url,
+            "final_url": final_url,
+            "status": status,
+            "sha256": _sha256(raw),
+        }
     listings = json.loads(remote_files["data/listings.json"].decode("utf-8"))
-    specs = json.loads(local_files["data/specs.json"].decode("utf-8"))
+    specs = json.loads(remote_files["data/specs.json"].decode("utf-8"))
     refresh_status = json.loads(remote_files["data/refresh-status.json"].decode("utf-8"))
     state = validate_public_status(refresh_status, listings)
     validate_public_body(
@@ -166,6 +213,8 @@ def verify_public_deployment(
     )
     proof["public_state"] = state["state"]
     proof["data_refreshed_at_utc"] = state["data_refreshed_at_utc"]
+    proof["fetches"] = fetches
+    proof["origin"] = origin
     return state, proof
 
 
@@ -236,16 +285,18 @@ def main() -> None:
     if args.run_state:
         if not run_state_path.is_absolute():
             run_state_path = args.root.resolve() / run_state_path
-        run_state = json.loads(run_state_path.read_text(encoding="utf-8"))
-        state_sha = run_state.get("result_sha")
-        if expected_sha is not None and expected_sha != state_sha:
-            raise AudienceBoundaryError("run-state result_sha conflicts with --expected-sha")
-        expected_sha = state_sha
-    state, proof = verify_public_deployment(args.root, expected_sha=expected_sha)
-    if args.run_state:
-        from scripts.run_evidence import record_deployment_proof
+        if expected_sha is not None:
+            raise AudienceBoundaryError("--expected-sha cannot be combined with --run-state")
+        from scripts.run_evidence import record_deployment_evidence
 
-        record_deployment_proof(args.root.resolve(), run_state_path, proof)
+        run_state = record_deployment_evidence(args.root.resolve(), run_state_path)
+        proof = run_state["stages"]["deployment"]["evidence"]
+        state = {
+            "state": proof["public_state"],
+            "data_refreshed_at_utc": proof["data_refreshed_at_utc"],
+        }
+    else:
+        state, proof = verify_public_deployment(args.root, expected_sha=expected_sha)
     print(
         f"public dashboard ok: {PUBLIC_URL} state={state['state']} "
         f"data_refreshed_at={state['data_refreshed_at_utc']} "

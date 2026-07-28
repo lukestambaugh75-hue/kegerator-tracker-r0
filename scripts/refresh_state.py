@@ -209,6 +209,38 @@ def build_payload_source_identity(
     }
 
 
+def build_refresh_target_identity(listings: list[dict]) -> dict:
+    """Identify the exact, unique retailer targets present before acquisition."""
+    if not isinstance(listings, list) or not listings:
+        raise ValueError("refresh target inventory must be a non-empty array")
+    targets: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    seen_source_urls: set[str] = set()
+    for index, row in enumerate(listings):
+        if not isinstance(row, dict):
+            raise ValueError(f"refresh target {index} must be an object")
+        target = {
+            field: str(row.get(field) or "").strip()
+            for field in ("brand", "model", "retailer", "source_url")
+        }
+        if any(not value for value in target.values()):
+            raise ValueError(f"refresh target {index} has an incomplete identity")
+        key = tuple(target[field] for field in ("brand", "model", "retailer", "source_url"))
+        if key in seen:
+            raise ValueError(f"refresh target {index} duplicates an earlier target")
+        if target["source_url"] in seen_source_urls:
+            raise ValueError(f"refresh target {index} reuses an earlier source URL")
+        seen.add(key)
+        seen_source_urls.add(target["source_url"])
+        targets.append(target)
+    targets.sort(key=lambda row: tuple(row[field] for field in ("brand", "model", "retailer", "source_url")))
+    return {
+        "schema_version": 1,
+        "source_count": len(targets),
+        "target_manifest_sha256": _canonical_json_digest(targets),
+    }
+
+
 def migrate_successful_snapshot(listings: list[dict], success_at: str | datetime) -> list[dict]:
     """Restore confirmed provenance without changing any other listing field."""
     if not isinstance(listings, list) or not listings:

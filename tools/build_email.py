@@ -6,8 +6,11 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import re
+import stat
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +38,61 @@ SPECS_PATH = ROOT / "data" / "specs.json"
 STATUS_PATH = ROOT / "data" / "refresh-status.json"
 DEFAULT_DASHBOARD_URL = CANONICAL_DASHBOARD_URL
 RECIPIENTS = list(EXPECTED_RECIPIENTS)
+
+
+def serialize_payload(payload: dict) -> bytes:
+    """Return the one canonical on-disk representation accepted by the run adapter."""
+    return (
+        json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    ).encode("utf-8")
+
+
+def _prepare_plain_parent(parent: Path) -> Path:
+    parent = Path(os.path.abspath(os.fspath(parent)))
+    missing: list[Path] = []
+    current = parent
+    while not current.exists() and not current.is_symlink():
+        missing.append(current)
+        if current == current.parent:
+            break
+        current = current.parent
+    if current.is_symlink():
+        raise ValueError(f"email payload path must not contain symlinks: {current}")
+    if not current.is_dir():
+        raise ValueError(f"email payload parent is not a directory: {current}")
+    for component in reversed(missing):
+        component.mkdir(mode=0o700)
+    cursor = Path(parent.anchor)
+    for part in parent.parts[1:]:
+        cursor = cursor / part
+        mode = cursor.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"email payload path must not contain symlinks: {cursor}")
+        if not stat.S_ISDIR(mode):
+            raise ValueError(f"email payload parent is not a directory: {cursor}")
+    return parent
+
+
+def write_payload(path: Path, payload: dict) -> None:
+    """Atomically write without following a symlink at the evidence leaf."""
+    path = Path(path)
+    parent = _prepare_plain_parent(path.parent)
+    path = parent / path.name
+    if path.is_symlink():
+        raise ValueError("email payload path must not be a symlink")
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(serialize_payload(payload))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def money(value) -> str:
@@ -188,9 +246,8 @@ def main() -> None:
     refresh_status = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
     payload = build_payload(listings, specs, refresh_status, args.dashboard_url)
     output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / "latest-email.json"
-    out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    write_payload(out_path, payload)
     print(f"email payload: recipients={len(payload['to'])} subject={payload['subject']!r}")
 
 

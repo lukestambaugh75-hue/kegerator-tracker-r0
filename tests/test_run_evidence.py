@@ -212,6 +212,7 @@ def _refresh_runner(
     redirect_outcome: Path | None = None,
 ):
     from scripts.refresh_state import build_refresh_target_identity
+    from scripts.refresh import write_json_exclusive
 
     def runner(command, **kwargs):
         command = [str(value) for value in command]
@@ -237,7 +238,13 @@ def _refresh_runner(
             "input_source_count": count,
             "target_manifest_sha256": target["target_manifest_sha256"],
         }
-        _write_json(outcome_path, outcome)
+        inherited = tuple(kwargs.get("pass_fds") or ())
+        if inherited:
+            assert len(inherited) == 1
+            assert kwargs["env"]["KEG_EVIDENCE_DIR_FD"] == str(inherited[0])
+            write_json_exclusive(outcome_path, outcome, dir_fd=inherited[0])
+        else:
+            _write_json(outcome_path, outcome)
         return subprocess.CompletedProcess(command, 0, stdout=b"refresh success\n", stderr=b"")
 
     return runner
@@ -386,6 +393,7 @@ def test_adapter_executes_one_refresh_and_binds_actual_target_inventory(evidence
     assert evidence["outcome"]["expected_count"] == 1
     assert evidence["outcome"]["run_id"] == state["run_id"]
     assert evidence["exit_code"] == 0
+    assert evidence["outcome_transport"] == "inherited_parent_directory_fd"
     with pytest.raises(RunEvidenceError, match="exactly once"):
         execute_refresh_once(
             evidence_repo,
@@ -886,7 +894,9 @@ def test_cli_owned_refresh_failure_auto_finalizes_state(
     monkeypatch.setattr(
         evidence,
         "_execute",
-        lambda command, root, runner=subprocess.run: evidence._command_result(forged(command)),
+        lambda command, root, runner=subprocess.run, **kwargs: evidence._command_result(
+            forged(command)
+        ),
     )
     original_finalize = evidence.finalize_failure
 
@@ -1090,7 +1100,7 @@ def test_prior_terminal_schema_is_archived_but_prior_running_lane_is_preserved(
         now=PAYLOAD_AT,
         origin_reader=_origin_for_head,
     )
-    assert next_state["schema_version"] == 3
+    assert next_state["schema_version"] == 4
     archives = list((evidence_repo / "out/run-state-archive").glob("legacy-terminal-*.json"))
     assert len(archives) == 1
     assert json.loads(archives[0].read_text(encoding="utf-8"))["schema_version"] == 2
@@ -1373,7 +1383,239 @@ def test_flock_serializes_concurrent_refresh_and_preserves_exactly_once(
     assert any("exactly once" in str(value) for value in results if isinstance(value, Exception))
 
 
-def test_lane_lock_rejects_symlink_and_refresh_outcome_is_exclusive(
+def test_repository_directory_flock_serializes_concurrent_starts(evidence_repo: Path):
+    from scripts.run_evidence import create_run_state
+
+    state_path = evidence_repo / "out/run-state.json"
+    entered = threading.Event()
+    release = threading.Event()
+    results: list[object] = []
+
+    def slow_origin(root: Path, observed_at: datetime):
+        entered.set()
+        assert release.wait(timeout=5)
+        return _origin_for_head(root, observed_at)
+
+    def invoke(run_id: str, origin_reader):
+        try:
+            results.append(
+                create_run_state(
+                    evidence_repo,
+                    state_path,
+                    run_id,
+                    "kegerator-tracker-email",
+                    "scheduled-email",
+                    owner_pid=os.getpid(),
+                    now=START,
+                    origin_reader=origin_reader,
+                )
+            )
+        except Exception as exc:
+            results.append(exc)
+
+    first = threading.Thread(target=invoke, args=("concurrent-a", slow_origin))
+    second = threading.Thread(target=invoke, args=("concurrent-b", _origin_for_head))
+    first.start()
+    assert entered.wait(timeout=5)
+    second.start()
+    time.sleep(0.2)
+    assert second.is_alive()
+    assert results == []
+    release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert not first.is_alive() and not second.is_alive()
+    assert sum(isinstance(value, dict) for value in results) == 1
+    assert any("unfinished run state" in str(value) for value in results if isinstance(value, Exception))
+
+
+def test_replacing_legacy_lock_path_cannot_split_lane_serialization(evidence_repo: Path):
+    from scripts.run_evidence import execute_refresh_once
+
+    state_path = _start(evidence_repo)
+    entered = threading.Event()
+    release = threading.Event()
+    first_result: list[object] = []
+    second_result: list[object] = []
+    base_runner = _refresh_runner(evidence_repo)
+    legacy_lock = evidence_repo / "out/run-evidence.lock"
+    assert not legacy_lock.exists()
+    legacy_lock.write_text("legacy replaceable pathname\n", encoding="utf-8")
+
+    def slow_runner(command, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5)
+        return base_runner(command, **kwargs)
+
+    def invoke(target: list[object], runner):
+        try:
+            target.append(
+                execute_refresh_once(
+                    evidence_repo,
+                    state_path,
+                    now=ATTEMPT,
+                    runner=runner,
+                )
+            )
+        except Exception as exc:
+            target.append(exc)
+
+    first = threading.Thread(target=invoke, args=(first_result, slow_runner))
+    first.start()
+    assert entered.wait(timeout=5)
+    legacy_lock.unlink()
+    legacy_lock.write_text("replacement must not become the authority\n", encoding="utf-8")
+
+    second = threading.Thread(
+        target=invoke,
+        args=(second_result, _refresh_runner(evidence_repo)),
+    )
+    second.start()
+    time.sleep(0.2)
+    assert second.is_alive(), "replacement lock path split the active transition lock"
+    assert second_result == []
+    release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert not first.is_alive() and not second.is_alive()
+    assert len(first_result) == 1 and isinstance(first_result[0], dict)
+    assert len(second_result) == 1 and "exactly once" in str(second_result[0])
+
+
+def test_replacing_nested_evidence_directory_is_detected_before_acceptance(
+    evidence_repo: Path,
+):
+    from scripts.run_evidence import RunEvidenceError, execute_refresh_once
+
+    state_path = _start(evidence_repo)
+    entered = threading.Event()
+    release = threading.Event()
+    base_runner = _refresh_runner(evidence_repo)
+    result: list[object] = []
+
+    def slow_runner(command, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5)
+        return base_runner(command, **kwargs)
+
+    def invoke():
+        try:
+            result.append(
+                execute_refresh_once(
+                    evidence_repo,
+                    state_path,
+                    now=ATTEMPT,
+                    runner=slow_runner,
+                )
+            )
+        except Exception as exc:
+            result.append(exc)
+
+    worker = threading.Thread(target=invoke)
+    worker.start()
+    assert entered.wait(timeout=5)
+    run_dir = evidence_repo / "out/runs/run-20260728"
+    moved = evidence_repo / "out/runs/replaced-during-transition"
+    run_dir.rename(moved)
+    run_dir.mkdir()
+    release.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert len(result) == 1 and isinstance(result[0], RunEvidenceError)
+    assert "identity changed" in str(result[0])
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["stages"]["freshness"]["status"] == "in_progress"
+
+
+def test_replacing_out_directory_fails_the_held_transition(evidence_repo: Path):
+    from scripts.run_evidence import RunEvidenceError, execute_refresh_once
+
+    state_path = _start(evidence_repo)
+    entered = threading.Event()
+    release = threading.Event()
+    base_runner = _refresh_runner(evidence_repo)
+    result: list[object] = []
+
+    def slow_runner(command, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5)
+        return base_runner(command, **kwargs)
+
+    def invoke():
+        try:
+            result.append(
+                execute_refresh_once(
+                    evidence_repo,
+                    state_path,
+                    now=ATTEMPT,
+                    runner=slow_runner,
+                )
+            )
+        except Exception as exc:
+            result.append(exc)
+
+    worker = threading.Thread(target=invoke)
+    worker.start()
+    assert entered.wait(timeout=5)
+    out = evidence_repo / "out"
+    moved = evidence_repo / "out-replaced-during-transition"
+    out.rename(moved)
+    out.mkdir()
+    release.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert len(result) == 1 and isinstance(result[0], RunEvidenceError)
+    assert "out directory identity changed" in str(result[0])
+    persisted = json.loads((moved / "run-state.json").read_text(encoding="utf-8"))
+    assert persisted["stages"]["freshness"]["status"] == "in_progress"
+    assert not (out / "run-state.json").exists()
+
+
+def test_replacing_state_file_is_detected_before_atomic_transition_write(
+    evidence_repo: Path,
+):
+    from scripts.run_evidence import RunEvidenceError, execute_refresh_once
+
+    state_path = _start(evidence_repo)
+    entered = threading.Event()
+    release = threading.Event()
+    base_runner = _refresh_runner(evidence_repo)
+    result: list[object] = []
+
+    def slow_runner(command, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5)
+        return base_runner(command, **kwargs)
+
+    def invoke():
+        try:
+            result.append(
+                execute_refresh_once(
+                    evidence_repo,
+                    state_path,
+                    now=ATTEMPT,
+                    runner=slow_runner,
+                )
+            )
+        except Exception as exc:
+            result.append(exc)
+
+    worker = threading.Thread(target=invoke)
+    worker.start()
+    assert entered.wait(timeout=5)
+    replacement = evidence_repo / "out/replacement-state.json"
+    replacement.write_bytes(state_path.read_bytes())
+    os.replace(replacement, state_path)
+    release.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert len(result) == 1 and isinstance(result[0], RunEvidenceError)
+    assert "evidence file identity changed" in str(result[0])
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["stages"]["freshness"]["status"] == "in_progress"
+
+
+def test_evidence_rejects_hardlinks_ignores_legacy_lock_symlink_and_outcome_is_exclusive(
     evidence_repo: Path,
     tmp_path: Path,
 ):
@@ -1382,10 +1624,10 @@ def test_lane_lock_rejects_symlink_and_refresh_outcome_is_exclusive(
 
     out = evidence_repo / "out"
     out.mkdir()
-    outside = tmp_path / "outside.lock"
-    outside.write_text("preserve", encoding="utf-8")
-    (out / "run-evidence.lock").symlink_to(outside)
-    with pytest.raises((RunEvidenceError, OSError), match="symlink|regular|loop"):
+    outside_state = tmp_path / "outside-state.json"
+    outside_state.write_text("preserve-state\n", encoding="utf-8")
+    os.link(outside_state, out / "run-state.json")
+    with pytest.raises(RunEvidenceError, match="uniquely owned regular"):
         create_run_state(
             evidence_repo,
             out / "run-state.json",
@@ -1396,7 +1638,24 @@ def test_lane_lock_rejects_symlink_and_refresh_outcome_is_exclusive(
             now=START,
             origin_reader=_origin_for_head,
         )
-    assert outside.read_text(encoding="utf-8") == "preserve"
+    assert outside_state.read_text(encoding="utf-8") == "preserve-state\n"
+    (out / "run-state.json").unlink()
+
+    outside_lock = tmp_path / "outside.lock"
+    outside_lock.write_text("preserve-lock\n", encoding="utf-8")
+    (out / "run-evidence.lock").symlink_to(outside_lock)
+    state = create_run_state(
+        evidence_repo,
+        out / "run-state.json",
+        "run-lock",
+        "kegerator-tracker-email",
+        "scheduled-email",
+        owner_pid=os.getpid(),
+        now=START,
+        origin_reader=_origin_for_head,
+    )
+    assert state["status"] == "running"
+    assert outside_lock.read_text(encoding="utf-8") == "preserve-lock\n"
 
     outcome = tmp_path / "outcome.json"
     write_json_exclusive(outcome, {"attempt": 1})
@@ -1404,6 +1663,19 @@ def test_lane_lock_rejects_symlink_and_refresh_outcome_is_exclusive(
     with pytest.raises(FileExistsError):
         write_json_exclusive(outcome, {"attempt": 2})
     assert outcome.read_bytes() == original
+
+    held = tmp_path / "held-outcome-parent"
+    held.mkdir()
+    routed_elsewhere = tmp_path / "replaceable-parent/outcome.json"
+    held_fd = os.open(held, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        write_json_exclusive(routed_elsewhere, {"attempt": "fd-anchored"}, dir_fd=held_fd)
+    finally:
+        os.close(held_fd)
+    assert json.loads((held / "outcome.json").read_text(encoding="utf-8")) == {
+        "attempt": "fd-anchored"
+    }
+    assert not routed_elsewhere.exists()
 
 
 def test_interrupted_verification_is_persisted_then_recovery_marks_review_required(

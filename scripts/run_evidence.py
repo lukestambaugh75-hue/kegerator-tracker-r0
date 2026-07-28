@@ -19,7 +19,7 @@ import socket
 import stat
 import subprocess
 import sys
-import tempfile
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -59,7 +59,7 @@ except ImportError:
 
 ROOT = _MODULE_ROOT
 DEFAULT_STATE_PATH = Path("out/run-state.json")
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 CONTRACT_ROLE = "terminal_summary"
 DEFAULT_WORKFLOW_ID = "kegerator-tracker-email"
 EXPECTED_LANE_ID = "scheduled-email"
@@ -199,6 +199,354 @@ def _assert_plain_path(path: Path, *, allow_missing_leaf: bool = False) -> None:
             raise RunEvidenceError(f"evidence path must be a regular file or directory: {current}")
 
 
+_ACTIVE_AUTHORITY = threading.local()
+
+
+def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _directory_open_flags() -> int:
+    return os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+
+class _EvidenceAuthority:
+    """FD-anchored authority for the locked repository and ignored evidence tree."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.root_fd = -1
+        self.out_fd = -1
+        self.root_stat: os.stat_result | None = None
+        self.out_stat: os.stat_result | None = None
+        self.observed_dirs: dict[str, tuple[int, int]] = {}
+        self.observed_files: dict[str, tuple[int, int, int, int, int, int, int]] = {}
+
+    def acquire(self) -> None:
+        try:
+            self.root_fd = os.open(self.root, _directory_open_flags())
+            self.root_stat = os.fstat(self.root_fd)
+            root_path_stat = os.lstat(self.root)
+            if (
+                not stat.S_ISDIR(self.root_stat.st_mode)
+                or self.root_stat.st_uid != os.getuid()
+                or not _same_inode(self.root_stat, root_path_stat)
+            ):
+                raise RunEvidenceError("repository root is not a stable current-user directory")
+            fcntl.flock(self.root_fd, fcntl.LOCK_EX)
+            self._verify_root()
+            try:
+                os.mkdir("out", 0o700, dir_fd=self.root_fd)
+            except FileExistsError:
+                pass
+            try:
+                self.out_fd = os.open("out", _directory_open_flags(), dir_fd=self.root_fd)
+            except OSError as exc:
+                raise RunEvidenceError("out must be a nonsymlink repository-local directory") from exc
+            self.out_stat = os.fstat(self.out_fd)
+            out_path_stat = os.stat("out", dir_fd=self.root_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(self.out_stat.st_mode)
+                or self.out_stat.st_uid != os.getuid()
+                or not _same_inode(self.out_stat, out_path_stat)
+            ):
+                raise RunEvidenceError("out is not the held repository-local directory")
+        except Exception:
+            self.close(verify=False)
+            raise
+
+    def _verify_root(self) -> None:
+        assert self.root_stat is not None
+        current = os.lstat(self.root)
+        descriptor = os.fstat(self.root_fd)
+        if not _same_inode(self.root_stat, descriptor) or not _same_inode(descriptor, current):
+            raise RunEvidenceError("repository root identity changed during the lane transition")
+
+    def _verify_out(self) -> None:
+        assert self.out_stat is not None
+        descriptor = os.fstat(self.out_fd)
+        current = os.stat("out", dir_fd=self.root_fd, follow_symlinks=False)
+        if not _same_inode(self.out_stat, descriptor) or not _same_inode(descriptor, current):
+            raise RunEvidenceError("out directory identity changed during the lane transition")
+
+    @staticmethod
+    def _parts(relative: Path | str) -> tuple[str, ...]:
+        path = Path(relative)
+        parts = path.parts
+        if len(parts) < 2 or parts[0] != "out" or any(
+            part in {"", ".", ".."} or "/" in part for part in parts
+        ):
+            raise RunEvidenceError("evidence path is outside the canonical out directory")
+        return tuple(parts)
+
+    @contextmanager
+    def _parent(self, relative: Path | str, *, create: bool):
+        parts = self._parts(relative)
+        descriptors = [os.dup(self.out_fd)]
+        links: list[tuple[int, str, int, os.stat_result]] = []
+        try:
+            current_fd = descriptors[0]
+            for index, part in enumerate(parts[1:-1], start=1):
+                if create:
+                    try:
+                        os.mkdir(part, 0o700, dir_fd=current_fd)
+                    except FileExistsError:
+                        pass
+                try:
+                    child_fd = os.open(part, _directory_open_flags(), dir_fd=current_fd)
+                except FileNotFoundError as exc:
+                    raise RunEvidenceError(
+                        f"evidence parent is missing: {'/'.join(parts[:-1])}"
+                    ) from exc
+                except OSError as exc:
+                    raise RunEvidenceError("evidence parent must not be a symlink") from exc
+                child_stat = os.fstat(child_fd)
+                current_stat = os.stat(part, dir_fd=current_fd, follow_symlinks=False)
+                if (
+                    not stat.S_ISDIR(child_stat.st_mode)
+                    or child_stat.st_uid != os.getuid()
+                    or not _same_inode(child_stat, current_stat)
+                ):
+                    os.close(child_fd)
+                    raise RunEvidenceError("evidence parent identity is invalid")
+                relative_dir = "/".join(parts[: index + 1])
+                directory_identity = (child_stat.st_dev, child_stat.st_ino)
+                expected_identity = self.observed_dirs.get(relative_dir)
+                if expected_identity is not None and expected_identity != directory_identity:
+                    os.close(child_fd)
+                    raise RunEvidenceError(
+                        f"evidence parent identity changed during transition: {relative_dir}"
+                    )
+                self.observed_dirs[relative_dir] = directory_identity
+                descriptors.append(child_fd)
+                links.append((current_fd, part, child_fd, child_stat))
+                current_fd = child_fd
+            yield current_fd, parts[-1]
+            for parent_fd, part, child_fd, expected in links:
+                current = os.stat(part, dir_fd=parent_fd, follow_symlinks=False)
+                descriptor = os.fstat(child_fd)
+                if not _same_inode(expected, descriptor) or not _same_inode(descriptor, current):
+                    raise RunEvidenceError("evidence parent identity changed during access")
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+
+    @staticmethod
+    def _validate_file_stat(value: os.stat_result) -> None:
+        if stat.S_ISLNK(value.st_mode):
+            raise RunEvidenceError("evidence file must not be a symlink")
+        if not stat.S_ISREG(value.st_mode):
+            raise RunEvidenceError("evidence file must be a regular file")
+        if value.st_nlink != 1 or value.st_uid != os.getuid():
+            raise RunEvidenceError("evidence file must be a uniquely owned regular file")
+
+    @staticmethod
+    def _identity(value: os.stat_result) -> tuple[int, int, int, int]:
+        return value.st_dev, value.st_ino, value.st_mode, value.st_nlink
+
+    @staticmethod
+    def _snapshot(value: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_nlink,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
+    def _remember(
+        self,
+        relative: Path | str,
+        value: os.stat_result,
+        *,
+        allow_authorized_replace: bool = False,
+    ) -> None:
+        name = Path(relative).as_posix()
+        identity = self._snapshot(value)
+        previous = self.observed_files.get(name)
+        if previous is not None and previous != identity and not allow_authorized_replace:
+            raise RunEvidenceError(f"evidence file identity changed during transition: {name}")
+        self.observed_files[name] = identity
+
+    def ensure_parent(self, relative: Path | str) -> None:
+        with self._parent(relative, create=True):
+            pass
+
+    def file_exists(self, relative: Path | str) -> bool:
+        with self._parent(relative, create=False) as (parent_fd, leaf):
+            try:
+                value = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return False
+            self._validate_file_stat(value)
+            self._remember(relative, value)
+            return True
+
+    def read_bytes(self, relative: Path | str) -> bytes:
+        with self._parent(relative, create=False) as (parent_fd, leaf):
+            try:
+                descriptor = os.open(
+                    leaf,
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=parent_fd,
+                )
+            except OSError as exc:
+                raise RunEvidenceError(f"evidence file is unavailable: {relative}") from exc
+            try:
+                opened = os.fstat(descriptor)
+                current = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+                self._validate_file_stat(opened)
+                if not _same_inode(opened, current):
+                    raise RunEvidenceError("evidence file identity changed before read")
+                chunks: list[bytes] = []
+                while True:
+                    chunk = os.read(descriptor, 1024 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                after = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+                if self._snapshot(opened) != self._snapshot(after):
+                    raise RunEvidenceError("evidence file identity changed during read")
+                self._remember(relative, after)
+                return b"".join(chunks)
+            finally:
+                os.close(descriptor)
+
+    @staticmethod
+    def _write_all(descriptor: int, payload: bytes) -> None:
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise RunEvidenceError("evidence write did not make progress")
+            view = view[written:]
+
+    def atomic_write(self, relative: Path | str, payload: bytes) -> None:
+        with self._parent(relative, create=True) as (parent_fd, leaf):
+            try:
+                existing = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                existing = None
+            if existing is not None:
+                self._validate_file_stat(existing)
+                previous = self.observed_files.get(Path(relative).as_posix())
+                if previous is not None and self._snapshot(existing) != previous:
+                    raise RunEvidenceError(
+                        f"evidence file identity changed before atomic write: {relative}"
+                    )
+            temporary = f".{leaf}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+            descriptor = -1
+            replaced = False
+            try:
+                descriptor = os.open(
+                    temporary,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=parent_fd,
+                )
+                self._write_all(descriptor, payload)
+                os.fsync(descriptor)
+                written = os.fstat(descriptor)
+                self._validate_file_stat(written)
+                os.replace(
+                    temporary,
+                    leaf,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+                replaced = True
+                current = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+                if not _same_inode(written, current) or self._identity(written) != self._identity(
+                    current
+                ):
+                    raise RunEvidenceError("atomic evidence identity changed during publication")
+                os.fsync(parent_fd)
+                self._remember(relative, current, allow_authorized_replace=True)
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+                if not replaced:
+                    try:
+                        os.unlink(temporary, dir_fd=parent_fd)
+                    except FileNotFoundError:
+                        pass
+
+    def exclusive_write(self, relative: Path | str, payload: bytes) -> None:
+        with self._parent(relative, create=True) as (parent_fd, leaf):
+            try:
+                descriptor = os.open(
+                    leaf,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=parent_fd,
+                )
+            except FileExistsError as exc:
+                raise RunEvidenceError(f"exclusive evidence path already exists: {leaf}") from exc
+            try:
+                self._write_all(descriptor, payload)
+                os.fsync(descriptor)
+                written = os.fstat(descriptor)
+                self._validate_file_stat(written)
+                current = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+                if not _same_inode(written, current) or self._identity(written) != self._identity(
+                    current
+                ):
+                    raise RunEvidenceError("exclusive evidence identity changed during creation")
+                os.fsync(parent_fd)
+                self._remember(relative, current)
+            finally:
+                os.close(descriptor)
+
+    def verify(self) -> None:
+        self._verify_root()
+        self._verify_out()
+        for relative in sorted(self.observed_dirs, key=lambda value: (value.count("/"), value)):
+            with self._parent(Path(relative) / ".identity-check", create=False):
+                pass
+        for relative, expected in list(self.observed_files.items()):
+            with self._parent(relative, create=False) as (parent_fd, leaf):
+                current = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+                self._validate_file_stat(current)
+                if self._snapshot(current) != expected:
+                    raise RunEvidenceError(
+                        f"evidence file identity changed before transition release: {relative}"
+                    )
+
+    def close(self, *, verify: bool) -> None:
+        error: Exception | None = None
+        if verify and self.root_fd >= 0 and self.out_fd >= 0:
+            try:
+                self.verify()
+            except Exception as exc:
+                error = exc
+        if self.out_fd >= 0:
+            os.close(self.out_fd)
+            self.out_fd = -1
+        if self.root_fd >= 0:
+            try:
+                fcntl.flock(self.root_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self.root_fd)
+                self.root_fd = -1
+        if error is not None:
+            raise error
+
+
+def _active_authority(root: Path) -> _EvidenceAuthority:
+    authority = getattr(_ACTIVE_AUTHORITY, "value", None)
+    if not isinstance(authority, _EvidenceAuthority) or authority.root != root:
+        raise RunEvidenceError("evidence access requires the held repository transition lock")
+    return authority
+
+
 def _canonical_out_path(
     root: Path,
     supplied: Path | str,
@@ -220,37 +568,11 @@ def _canonical_out_path(
     except ValueError as exc:
         raise RunEvidenceError("evidence must stay under the canonical out directory") from exc
 
-    out_dir = root / "out"
-    if out_dir.exists() or out_dir.is_symlink():
-        _assert_plain_path(out_dir)
-        if not out_dir.is_dir():
-            raise RunEvidenceError("out must be a real directory")
-    elif create_parent:
-        out_dir.mkdir(mode=0o700)
-    else:
-        raise RunEvidenceError("canonical out directory is unavailable")
-
-    parent = expected.parent
+    authority = _active_authority(root)
     if create_parent:
-        relative_parent = parent.relative_to(out_dir)
-        current = out_dir
-        for part in relative_parent.parts:
-            current = current / part
-            if current.exists() or current.is_symlink():
-                _assert_plain_path(current)
-                if not current.is_dir():
-                    raise RunEvidenceError(f"evidence parent is not a directory: {current}")
-            else:
-                current.mkdir(mode=0o700)
-    _assert_plain_path(parent)
-    if expected.exists() or expected.is_symlink():
-        _assert_plain_path(expected)
-        if not expected.is_file():
-            raise RunEvidenceError(f"evidence file must be a regular file: {expected}")
-        leaf = expected.lstat()
-        if leaf.st_nlink != 1 or leaf.st_uid != os.getuid():
-            raise RunEvidenceError("evidence file must be uniquely owned by the current user")
-    elif require_file:
+        authority.ensure_parent(Path(relative))
+    exists = authority.file_exists(Path(relative))
+    if require_file and not exists:
         raise RunEvidenceError(f"evidence file is unavailable: {Path(relative).as_posix()}")
 
     rel_text = expected.relative_to(root).as_posix()
@@ -271,76 +593,66 @@ def _state_path(root: Path, state_path: Path | str, *, create: bool = False) -> 
     )
 
 
+def _evidence_relative(path: Path) -> tuple[_EvidenceAuthority, Path]:
+    authority = getattr(_ACTIVE_AUTHORITY, "value", None)
+    if not isinstance(authority, _EvidenceAuthority):
+        raise RunEvidenceError("evidence access requires the held transition authority")
+    try:
+        relative = path.relative_to(authority.root)
+    except ValueError as exc:
+        raise RunEvidenceError("evidence path belongs to a different repository") from exc
+    _EvidenceAuthority._parts(relative)
+    return authority, relative
+
+
+def _read_evidence_bytes(path: Path) -> bytes:
+    authority, relative = _evidence_relative(path)
+    return authority.read_bytes(relative)
+
+
+def _evidence_exists(path: Path) -> bool:
+    authority, relative = _evidence_relative(path)
+    return authority.file_exists(relative)
+
+
 def _atomic_json(path: Path, value: dict) -> None:
-    _assert_plain_path(path.parent)
-    if path.exists() or path.is_symlink():
-        _assert_plain_path(path)
     if value.get("contract_role") == CONTRACT_ROLE:
         _validate_state_shape(value)
     payload = (json.dumps(value, indent=2) + "\n").encode("utf-8")
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except Exception:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-        raise
+    authority, relative = _evidence_relative(path)
+    authority.atomic_write(relative, payload)
 
 
 def _exclusive_json(path: Path, value: dict, *, validate_state: bool = True) -> None:
     """Create evidence without replacing any pre-existing path."""
-    _assert_plain_path(path.parent)
     if validate_state and value.get("contract_role") == CONTRACT_ROLE:
         _validate_state_shape(value)
     payload = (json.dumps(value, indent=2) + "\n").encode("utf-8")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(path, flags, 0o600)
-    except FileExistsError as exc:
-        raise RunEvidenceError(f"exclusive evidence path already exists: {path.name}") from exc
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(payload)
-        handle.flush()
-        os.fsync(handle.fileno())
+    authority, relative = _evidence_relative(path)
+    authority.exclusive_write(relative, payload)
 
 
 @contextmanager
 def _lane_lock(root: Path):
-    """Serialize every state-changing transition through one local flock."""
+    """Serialize a full transition on the stable pre-existing repository directory."""
     root = _exact_repo_root(root)
-    relative = Path("out/run-evidence.lock")
-    lock_path = _canonical_out_path(
-        root,
-        root / relative,
-        relative,
-        create_parent=True,
-    )
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(lock_path, flags, 0o600)
+    authority = _EvidenceAuthority(root)
+    authority.acquire()
+    previous = getattr(_ACTIVE_AUTHORITY, "value", None)
+    _ACTIVE_AUTHORITY.value = authority
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        descriptor = os.fstat(fd)
-        path_stat = os.lstat(lock_path)
-        if (
-            not stat.S_ISREG(descriptor.st_mode)
-            or descriptor.st_nlink != 1
-            or descriptor.st_uid != os.getuid()
-            or descriptor.st_dev != path_stat.st_dev
-            or descriptor.st_ino != path_stat.st_ino
-        ):
-            raise RunEvidenceError("lane lock is not a unique project-local regular file")
-        yield
+        yield authority
     finally:
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            authority.close(verify=True)
         finally:
-            os.close(fd)
+            if previous is None:
+                try:
+                    delattr(_ACTIVE_AUTHORITY, "value")
+                except AttributeError:
+                    pass
+            else:
+                _ACTIVE_AUTHORITY.value = previous
 
 
 def _serialized_transition(function):
@@ -507,6 +819,7 @@ def _validate_stage_evidence(name: str, stage: dict) -> None:
                     "started_at_utc",
                     "input_source_sha256",
                     "target_identity",
+                    "outcome_transport",
                 },
             )
             cwd = Path(str(evidence["cwd"] or ""))
@@ -521,6 +834,8 @@ def _validate_stage_evidence(name: str, stage: dict) -> None:
             ]
             if evidence["command"] != expected_command:
                 raise RunEvidenceError("freshness command evidence is not the fixed exclusive command")
+            if evidence["outcome_transport"] != "inherited_parent_directory_fd":
+                raise RunEvidenceError("freshness outcome transport is not FD-anchored")
             parse_utc(evidence["started_at_utc"])
             base = {
                 "command",
@@ -529,6 +844,7 @@ def _validate_stage_evidence(name: str, stage: dict) -> None:
                 "started_at_utc",
                 "input_source_sha256",
                 "target_identity",
+                "outcome_transport",
             }
             command_terminal = {
                 "finished_at_utc",
@@ -1105,7 +1421,7 @@ def _validate_state_shape(state: dict) -> None:
 def _load_state(root: Path, state_path: Path | str) -> tuple[Path, dict]:
     path = _state_path(root, state_path)
     try:
-        state = json.loads(path.read_text(encoding="utf-8"))
+        state = json.loads(_read_evidence_bytes(path).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RunEvidenceError(f"run state is unavailable: {exc}") from exc
     _validate_state_shape(state)
@@ -1444,7 +1760,7 @@ def _archive_terminal_state(
     *,
     validate_state: bool = True,
 ) -> None:
-    raw = state_path.read_bytes()
+    raw = _read_evidence_bytes(state_path)
     compact_time = re.sub(r"[^0-9]", "", state["started_at_utc"])
     name = f"{state['run_id']}-{compact_time}-{_sha256(raw)[:12]}.json"
     relative = Path("out/run-state-archive") / name
@@ -1454,8 +1770,8 @@ def _archive_terminal_state(
         relative,
         create_parent=True,
     )
-    if destination.exists():
-        if destination.read_bytes() != raw:
+    if _evidence_exists(destination):
+        if _read_evidence_bytes(destination) != raw:
             raise RunEvidenceError("terminal run archive collision requires review")
         return
     try:
@@ -1469,7 +1785,7 @@ def _is_archivable_legacy_terminal(root: Path, state: object) -> bool:
     """Recognize only prior terminal schemas; never retire an old running lane."""
     if not isinstance(state, dict):
         return False
-    if state.get("contract_role") != CONTRACT_ROLE or state.get("schema_version") not in {1, 2}:
+    if state.get("contract_role") != CONTRACT_ROLE or state.get("schema_version") not in {1, 2, 3}:
         return False
     if state.get("status") not in {"blocked", "failed", "delivery_unverified"}:
         return False
@@ -1513,9 +1829,10 @@ def create_run_state(
         raise RunEvidenceError("only the canonical scheduled Kegerator lane is supported")
     observed_at = parse_utc(now or _now())
     assert observed_at is not None
-    if path.exists():
+    occupied = _evidence_exists(path)
+    if occupied:
         try:
-            previous = json.loads(path.read_text(encoding="utf-8"))
+            previous = json.loads(_read_evidence_bytes(path).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RunEvidenceError("existing run state is invalid; preserve it for review") from exc
         try:
@@ -1617,7 +1934,10 @@ def create_run_state(
         "recovery": None,
     }
     _validate_state_shape(state)
-    _atomic_json(path, state)
+    if occupied:
+        _atomic_json(path, state)
+    else:
+        _exclusive_json(path, state)
     return state
 
 
@@ -1632,16 +1952,22 @@ def _execute(
     root: Path,
     *,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    pass_fds: tuple[int, ...] = (),
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[int, bytes, bytes]:
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.pop("KEG_TRACKER_OFFLINE", None)
+    env.pop("KEG_EVIDENCE_DIR_FD", None)
+    if extra_env:
+        env.update(extra_env)
     result = runner(
         command,
         cwd=os.fspath(root),
         env=env,
         capture_output=True,
         check=False,
+        pass_fds=pass_fds,
     )
     return _command_result(result)
 
@@ -1743,7 +2069,7 @@ def execute_refresh_once(
         relative,
         create_parent=True,
     )
-    if outcome_path.exists():
+    if _evidence_exists(outcome_path):
         raise RunEvidenceError("canonical refresh outcome already exists for this run_id")
     script = root / "scripts/refresh.py"
     _assert_plain_path(script)
@@ -1763,12 +2089,21 @@ def execute_refresh_once(
         "started_at_utc": utc_iso(started),
         "input_source_sha256": identity_before["source_sha256"],
         "target_identity": target_before,
+        "outcome_transport": "inherited_parent_directory_fd",
     }
     state["stages"]["freshness"] = _stage(
         "in_progress", started, state["run_id"], identity_before["source_sha256"], invocation
     )
     _atomic_json(path, state)
-    exit_code, stdout, stderr = _execute(command, root, runner=runner)
+    authority = _active_authority(root)
+    with authority._parent(relative, create=True) as (outcome_parent_fd, _):
+        exit_code, stdout, stderr = _execute(
+            command,
+            root,
+            runner=runner,
+            pass_fds=(outcome_parent_fd,),
+            extra_env={"KEG_EVIDENCE_DIR_FD": str(outcome_parent_fd)},
+        )
     finished = parse_utc(now or _now())
     assert finished is not None
     invocation.update(
@@ -1802,7 +2137,7 @@ def execute_refresh_once(
         relative,
         require_file=True,
     )
-    raw = outcome_path.read_bytes()
+    raw = _read_evidence_bytes(outcome_path)
     try:
         outcome = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -2379,7 +2714,7 @@ def _validate_current_payload(
         Path("out/latest-email.json"),
         require_file=True,
     )
-    raw = payload_file.read_bytes()
+    raw = _read_evidence_bytes(payload_file)
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:

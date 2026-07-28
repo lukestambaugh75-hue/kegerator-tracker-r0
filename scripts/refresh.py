@@ -87,24 +87,40 @@ def write_json(path: Path, data) -> None:
         raise
 
 
-def write_json_exclusive(path: Path, data) -> None:
+def write_json_exclusive(path: Path, data, *, dir_fd: int | None = None) -> None:
     """Create one run outcome without replacing an earlier attempt record."""
     path = Path(os.path.abspath(os.fspath(path)))
-    cursor = Path(path.anchor)
-    for part in path.parent.parts[1:]:
-        cursor = cursor / part
-        mode = cursor.lstat().st_mode
-        if stat.S_ISLNK(mode):
-            raise ValueError(f"exclusive outcome path must not contain symlinks: {cursor}")
-        if not stat.S_ISDIR(mode):
-            raise ValueError(f"exclusive outcome parent is not a directory: {cursor}")
     payload = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(path, flags, 0o600)
+    if dir_fd is None:
+        cursor = Path(path.anchor)
+        for part in path.parent.parts[1:]:
+            cursor = cursor / part
+            mode = cursor.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                raise ValueError(f"exclusive outcome path must not contain symlinks: {cursor}")
+            if not stat.S_ISDIR(mode):
+                raise ValueError(f"exclusive outcome parent is not a directory: {cursor}")
+        fd = os.open(path, flags, 0o600)
+        parent_fd = None
+    else:
+        parent = os.fstat(dir_fd)
+        if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid():
+            raise ValueError("exclusive outcome directory FD is invalid")
+        fd = os.open(path.name, flags, 0o600, dir_fd=dir_fd)
+        parent_fd = dir_fd
     with os.fdopen(fd, "wb") as handle:
         handle.write(payload)
         handle.flush()
         os.fsync(handle.fileno())
+        written = os.fstat(handle.fileno())
+        if not stat.S_ISREG(written.st_mode) or written.st_nlink != 1 or written.st_uid != os.getuid():
+            raise ValueError("exclusive outcome file identity is invalid")
+        if parent_fd is not None:
+            current = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+            if (written.st_dev, written.st_ino) != (current.st_dev, current.st_ino):
+                raise ValueError("exclusive outcome file identity changed during creation")
+            os.fsync(parent_fd)
 
 
 def spec_key(brand: str, model: str) -> str:
@@ -583,7 +599,12 @@ def main() -> None:
             "target_manifest_sha256": target_identity["target_manifest_sha256"],
         }
         if args.exclusive_outcome:
-            write_json_exclusive(args.outcome_path, outcome)
+            inherited_dir_fd = os.environ.get("KEG_EVIDENCE_DIR_FD")
+            write_json_exclusive(
+                args.outcome_path,
+                outcome,
+                dir_fd=int(inherited_dir_fd) if inherited_dir_fd is not None else None,
+            )
         else:
             write_json(args.outcome_path, outcome)
     print(

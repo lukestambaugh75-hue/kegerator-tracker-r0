@@ -10,7 +10,7 @@ json:
 	$(PY) -m json.tool data/listings.json >/dev/null
 	$(PY) -m json.tool data/specs.json >/dev/null
 
-test:
+test: email-content
 	$(PY) -m pytest -q
 
 audience: email-content

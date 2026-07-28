@@ -223,6 +223,12 @@ def test_audience_guard_accepts_the_current_repository():
     validate_repository(Path.cwd())
 
 
+def test_make_test_rebuilds_the_ignored_payload_before_pytest():
+    makefile = Path("Makefile").read_text(encoding="utf-8")
+
+    assert "test: email-content" in makefile.splitlines()
+
+
 def test_canonical_index_digest_and_path_are_pinned():
     from scripts.audience_guard import (
         CANONICAL_INDEX_PATH,

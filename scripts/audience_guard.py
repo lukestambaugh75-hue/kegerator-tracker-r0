@@ -15,9 +15,13 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 try:
-    from .refresh_state import utc_iso, validate_refresh_status
+    from .refresh_state import (
+        build_payload_source_identity,
+        utc_iso,
+        validate_refresh_status,
+    )
 except ImportError:
-    from refresh_state import utc_iso, validate_refresh_status
+    from refresh_state import build_payload_source_identity, utc_iso, validate_refresh_status
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -827,6 +831,8 @@ def validate_html(
 def validate_email_payload(
     payload: dict,
     allowed_listing_urls: set[str] | frozenset[str] = frozenset(),
+    *,
+    expected_source_identity: dict | None = None,
 ) -> None:
     """Validate exact recipients and all URL-bearing email fields."""
     if payload.get("to") != EXPECTED_RECIPIENTS:
@@ -852,6 +858,11 @@ def validate_email_payload(
     for field in ("dashboard_url", "body_text", "body_html"):
         for value in _absolute_urls(payload.get(field)):
             _validate_navigation(value, f"email {field}", allowed_urls)
+    if expected_source_identity is not None:
+        if payload.get("source_identity") != expected_source_identity:
+            raise AudienceBoundaryError(
+                "email payload source identity does not match the current refresh inputs"
+            )
 
 
 def validate_automation_mirror(text: str) -> None:
@@ -863,6 +874,19 @@ def validate_automation_mirror(text: str) -> None:
         )
     if "scripts/audience_guard.py" not in text:
         raise AudienceBoundaryError("automation mirror must run scripts/audience_guard.py")
+    for required in (
+        "scripts/run_evidence.py start",
+        "scripts/run_evidence.py refresh",
+        "scripts/run_evidence.py result",
+        "scripts/check_public_pages.py --run-state",
+        "scripts/run_evidence.py payload",
+        "scripts/run_evidence.py receipt",
+        "make verify-current",
+    ):
+        if required not in text:
+            raise AudienceBoundaryError(f"automation mirror missing evidence gate: {required}")
+    if "make verify`" in text or "make verify," in text:
+        raise AudienceBoundaryError("automation mirror must not run a second mutating refresh")
     if not re.search(r'^status\s*=\s*"(?:ACTIVE|READY_TO_REGISTER)"\s*$', text, re.MULTILINE):
         raise AudienceBoundaryError("automation mirror status must be ACTIVE or READY_TO_REGISTER")
     if "no CC/BCC" not in text and "Do not add CC or BCC" not in text:
@@ -876,6 +900,7 @@ def validate_repository(root: Path = ROOT) -> frozenset[str]:
     """Validate local dashboard, data, automation mirror, and generated email."""
     root = Path(root).resolve()
     listings = json.loads((root / "data" / "listings.json").read_text(encoding="utf-8"))
+    specs = json.loads((root / "data" / "specs.json").read_text(encoding="utf-8"))
     refresh = validate_refresh_status(
         json.loads((root / "data" / "refresh-status.json").read_text(encoding="utf-8"))
     )
@@ -909,6 +934,7 @@ def validate_repository(root: Path = ROOT) -> frozenset[str]:
         validate_email_payload(
             json.loads(email_path.read_text(encoding="utf-8")),
             allowed_sources,
+            expected_source_identity=build_payload_source_identity(listings, specs, refresh),
         )
     return allowed_sources
 

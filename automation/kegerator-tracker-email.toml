@@ -15,15 +15,19 @@ This is a direct-link-only Kegerator page. Do not add links, navigation, or runt
 
 Required run order:
 1. Run `git pull --ff-only`.
-2. Run `/usr/bin/python3 scripts/audience_guard.py`. Stop before refresh or email if it fails.
-3. Run `/usr/bin/python3 scripts/refresh.py`.
-4. Run `make verify`, which rebuilds the email payload and reruns the audience guard.
-5. If tracked files changed and the branch is `main`, stage only touched repo files, commit with `Refresh Kegerator dashboard data`, and push to origin. Do not force-push.
-6. Run `make pages-check`. If GitHub Pages is not current yet, wait and retry.
-7. Read `out/latest-email.json` and send one Gmail email using the signed-in Chrome/Gmail browser route. Address it exactly to `lukestambaugh75@gmail.com` and `devin.mullen89@gmail.com`, with no CC/BCC, using the generated subject and body. Include the public dashboard link `https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/`.
-8. Before sending, visibly verify the two recipient chips, no CC/BCC, subject, body, dashboard link, and a passing audience guard.
-9. If the Gmail connector reports missing OAuth scopes, do not stop to repair the connector during the tracker run. Use the signed-in Chrome/Gmail browser route.
-10. After the email attempt is complete, stop and wait for the next scheduled run.
+2. Create one unique run ID, keep lane ID `scheduled-email`, and run `/usr/bin/python3 scripts/run_evidence.py start --run-id "$RUN_ID" --lane-id scheduled-email`. The ignored `out/run-state.json` is the terminal-summary evidence for this run; never add it to git.
+3. Run `/usr/bin/python3 scripts/audience_guard.py`. Stop before refresh or email if it fails.
+4. Run exactly one refresh with `/usr/bin/python3 scripts/refresh.py --outcome-path out/refresh-outcome.json`, then bind it with `/usr/bin/python3 scripts/run_evidence.py refresh --outcome out/refresh-outcome.json`.
+5. Run `make verify-current`. This is non-mutating verification: it does not run a second refresh. It rebuilds `out/latest-email.json`, validates its current source identity, reruns tests and the audience guard, checks history, compiles Python, and checks the diff.
+6. Do not improvise repairs. If a verification failure has one specific reversible repair, first write a detached proposal under `out/`, record it with `scripts/run_evidence.py propose-repair --repair-id <id> --evidence <proposal>`, make that one bounded attempt, and record its result with the matching `repair --repair-id <id> --evidence <result>`. Otherwise stop with the blocker. Never make a second repair attempt in the same run.
+7. If tracked files changed and the branch is `main`, stage only touched repo files, commit with `Refresh Kegerator dashboard data`, and push to origin. Do not force-push. Then bind the clean pushed result with `/usr/bin/python3 scripts/run_evidence.py result`.
+8. If refresh evidence is blocked, partial, or failed, keep receipt `unverified`, run `/usr/bin/python3 scripts/run_evidence.py finish --outcome blocked`, and do not send. Otherwise continue.
+9. Run `/usr/bin/python3 scripts/check_public_pages.py --run-state out/run-state.json`. Retry only for ordinary Pages propagation. This must prove origin/main, local HEAD, the current refresh identity, and every contracted dashboard runtime byte are one result.
+10. Bind the payload with `/usr/bin/python3 scripts/run_evidence.py payload --payload out/latest-email.json`. Stop if current refresh inputs, deployed identity, or payload identity differ.
+11. Read `out/latest-email.json` and send one Gmail email using the signed-in Chrome/Gmail browser route. Address it exactly to `lukestambaugh75@gmail.com` and `devin.mullen89@gmail.com`, with no CC/BCC, using the generated subject and body. Include the public dashboard link `https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/`.
+12. Before sending, visibly verify the two recipient chips, no CC/BCC, subject, body, dashboard link, and a passing audience guard. If the Gmail connector reports missing OAuth scopes, use the already approved signed-in Chrome/Gmail browser route; do not repair the connector during the run.
+13. Receipt remains `unverified` unless the outer browser or mailbox supplies observed evidence tied to this run ID, workflow ID `kegerator-tracker-email`, lane ID, exact payload SHA-256, recipients, subject, observed UTC time, and external receipt ID. Save that evidence under ignored `out/`, bind it with `/usr/bin/python3 scripts/run_evidence.py receipt --evidence <receipt-json>`, then finish with `/usr/bin/python3 scripts/run_evidence.py finish --outcome delivered`. Without that evidence, do not claim delivery.
+14. After the recorded outcome is complete, stop and wait for the next scheduled run.
 
 Do not purchase anything or contact retailers. Confirm final cart total, tax, pickup/delivery timing, seller identity, keg fit, and garage ventilation before buying."""
 status = "ACTIVE"

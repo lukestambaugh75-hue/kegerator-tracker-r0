@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import math
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -14,6 +16,16 @@ DEFAULT_CADENCE_MINUTES = 1440
 DEFAULT_GRACE_MINUTES = 180
 FAILURE_STATUSES = {"blocked", "partial", "failed"}
 ATTEMPT_STATUSES = {"success", "unknown", *FAILURE_STATUSES}
+
+
+def _canonical_json_digest(value: object) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def parse_utc(value: str | datetime | None) -> datetime | None:
@@ -163,6 +175,38 @@ def validate_refresh_status(refresh: dict) -> dict:
         if attempt_at is not None or normalized["last_attempt_reason"] is not None:
             raise ValueError("unknown attempt status cannot retain attempt metadata")
     return normalized
+
+
+def build_payload_source_identity(
+    listings: list[dict],
+    specs: list[dict],
+    refresh: dict,
+) -> dict:
+    """Return a deterministic identity for every input that can shape an email."""
+    if not isinstance(listings, list) or not isinstance(specs, list):
+        raise ValueError("payload source listings and specs must be arrays")
+    normalized_refresh = validate_refresh_status(refresh)
+    listings_digest = _canonical_json_digest(listings)
+    specs_digest = _canonical_json_digest(specs)
+    refresh_digest = _canonical_json_digest(normalized_refresh)
+    source_digest = _canonical_json_digest(
+        {
+            "listings_sha256": listings_digest,
+            "specs_sha256": specs_digest,
+            "refresh_status_sha256": refresh_digest,
+        }
+    )
+    return {
+        "schema_version": 1,
+        "source_sha256": source_digest,
+        "listings_sha256": listings_digest,
+        "specs_sha256": specs_digest,
+        "refresh_status_sha256": refresh_digest,
+        "data_refreshed_at_utc": normalized_refresh["data_refreshed_at_utc"],
+        "last_attempt_at_utc": normalized_refresh["last_attempt_at_utc"],
+        "last_attempt_status": normalized_refresh["last_attempt_status"],
+        "row_count": normalized_refresh["row_count"],
+    }
 
 
 def migrate_successful_snapshot(listings: list[dict], success_at: str | datetime) -> list[dict]:

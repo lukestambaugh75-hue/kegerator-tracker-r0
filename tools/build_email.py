@@ -22,7 +22,12 @@ from scripts.audience_guard import (  # noqa: E402
     listing_source_urls,
     validate_email_payload,
 )
-from scripts.refresh_state import evaluate_refresh, format_central, utc_iso  # noqa: E402
+from scripts.refresh_state import (  # noqa: E402
+    build_payload_source_identity,
+    evaluate_refresh,
+    format_central,
+    utc_iso,
+)
 
 
 LISTINGS_PATH = ROOT / "data" / "listings.json"
@@ -104,6 +109,7 @@ def build_payload(
 ) -> dict:
     now = now or datetime.now(timezone.utc)
     state = evaluate_refresh(refresh_status, now=now)
+    source_identity = build_payload_source_identity(listings, specs, refresh_status)
     status = state["state"]
     actionable = status in {"Fresh", "Due"} and _snapshot_is_represented(listings, refresh_status)
     success_text = state["data_refreshed_at_central"]
@@ -162,8 +168,13 @@ def build_payload(
         "dashboard_url": dashboard_url,
         "generated_at": utc_iso(now),
         "refresh_state": status,
+        "source_identity": source_identity,
     }
-    validate_email_payload(payload, listing_source_urls(listings))
+    validate_email_payload(
+        payload,
+        listing_source_urls(listings),
+        expected_source_identity=source_identity,
+    )
     return payload
 
 

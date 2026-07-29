@@ -14,13 +14,18 @@ from pathlib import Path
 import pytest
 
 
-START = datetime(2026, 7, 28, 12, 0, tzinfo=timezone.utc)
-ATTEMPT = datetime(2026, 7, 28, 12, 1, tzinfo=timezone.utc)
-AFTER = datetime(2026, 7, 28, 12, 2, tzinfo=timezone.utc)
-PAYLOAD_AT = datetime(2026, 7, 28, 12, 3, tzinfo=timezone.utc)
-PRE_SEND_AT = datetime(2026, 7, 28, 12, 3, 30, tzinfo=timezone.utc)
-FINISH = datetime(2026, 7, 28, 12, 4, tzinfo=timezone.utc)
+FIXTURE_NOW = datetime.now(timezone.utc).replace(microsecond=0)
+START = FIXTURE_NOW - timedelta(minutes=4)
+ATTEMPT = FIXTURE_NOW - timedelta(minutes=3)
+AFTER = FIXTURE_NOW - timedelta(minutes=2)
+PAYLOAD_AT = FIXTURE_NOW - timedelta(minutes=1)
+PRE_SEND_AT = FIXTURE_NOW - timedelta(seconds=30)
+FINISH = FIXTURE_NOW
 ORIGIN_URL = "https://github.com/lukestambaugh75-hue/kegerator-tracker-r0.git"
+
+
+def _utc_text(value: datetime) -> str:
+    return value.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _run(root: Path, *args: str) -> str:
@@ -91,7 +96,7 @@ def _origin_for_head(root: Path, observed_at: datetime) -> dict:
 def evidence_repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     root.mkdir()
-    old_timestamp = "2026-07-27T12:00:00Z"
+    old_timestamp = _utc_text(START - timedelta(days=1))
     _write_json(root / "data/listings.json", [_listing(old_timestamp)])
     _write_json(root / "data/specs.json", [])
     _write_json(root / "data/refresh-status.json", _status(old_timestamp))
@@ -100,7 +105,7 @@ def evidence_repo(tmp_path: Path) -> Path:
     (root / "index.html").write_text("<html>Kegerator Tracker</html>\n", encoding="utf-8")
     (root / "history.csv").write_text(
         "date,brand,model,retailer,price,list_price,source,data_quality\n"
-        "2026-07-27,Kegco,K309B-1,Home Depot,800,900,https://example.com/item,confirmed\n",
+        f"{(START.date() - timedelta(days=1)).isoformat()},Kegco,K309B-1,Home Depot,800,900,https://example.com/item,confirmed\n",
         encoding="utf-8",
     )
     (root / ".gitignore").write_text(
@@ -220,7 +225,7 @@ def _refresh_runner(
         if redirect_outcome is not None:
             outcome_path = redirect_outcome
         run_id = command[command.index("--run-id") + 1]
-        attempted = "2026-07-28T12:01:00Z"
+        attempted = _utc_text(ATTEMPT)
         before = json.loads((root / "data/listings.json").read_text(encoding="utf-8"))
         target = build_refresh_target_identity(before)
         _write_json(root / "data/listings.json", [_listing(attempted, 750)])
@@ -406,7 +411,7 @@ def test_adapter_executes_one_refresh_and_binds_actual_target_inventory(evidence
 def test_target_inventory_rejects_reused_source_url():
     from scripts.refresh_state import build_refresh_target_identity
 
-    rows = [_listing("2026-07-28T12:00:00Z"), _listing("2026-07-28T12:00:00Z")]
+    rows = [_listing(_utc_text(START)), _listing(_utc_text(START))]
     rows[1]["model"] = "DIFFERENT-MODEL"
     with pytest.raises(ValueError, match="reuses an earlier source URL"):
         build_refresh_target_identity(rows)
@@ -477,7 +482,7 @@ def test_bounded_repair_records_command_path_exit_and_forces_verification_rerun(
 
     (evidence_repo / "history.csv").write_text(
         "date,brand,model,retailer,price,list_price,source,data_quality\n"
-        "2026-07-27,Kegco,K309B-1,Home Depot,800,900,https://example.com/a,confirmed\n"
+        f"{(START.date() - timedelta(days=1)).isoformat()},Kegco,K309B-1,Home Depot,800,900,https://example.com/a,confirmed\n"
         "2026-07-26,Kegco,K309B-1,Home Depot,810,900,https://example.com/b,estimated\n",
         encoding="utf-8",
     )
@@ -569,7 +574,7 @@ def test_payload_requires_exact_schema_content_serialization_and_freshness(
     elif mutation == "noncanonical_bytes":
         payload_path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
     else:
-        payload["generated_at"] = "2026-07-27T12:00:00Z"
+        payload["generated_at"] = _utc_text(START - timedelta(days=1))
         _write_json(payload_path, payload)
     with pytest.raises(RunEvidenceError, match="payload|predates|old"):
         record_payload_evidence(
@@ -874,11 +879,11 @@ def test_early_failure_finalizes_without_result_and_records_origin_failure(evide
     )
     assert state["status"] == "failed"
     assert state["result_sha"] is None
-    assert state["finished_at_utc"] == "2026-07-28T12:02:00Z"
+    assert state["finished_at_utc"] == _utc_text(AFTER)
     assert state["stages"]["blocker"]["status"] == "recorded"
     assert state["origin_at_finish"] == {
         "status": "unverified",
-        "observed_at_utc": "2026-07-28T12:02:00Z",
+        "observed_at_utc": _utc_text(AFTER),
         "reason_code": "live_origin_check_failed",
     }
 
@@ -938,7 +943,7 @@ def test_second_failed_verification_auto_finalizes_after_repair_budget(
 
     (evidence_repo / "history.csv").write_text(
         "date,brand,model,retailer,price,list_price,source,data_quality\n"
-        "2026-07-27,Kegco,K309B-1,Home Depot,800,900,https://example.com/a,confirmed\n"
+        f"{(START.date() - timedelta(days=1)).isoformat()},Kegco,K309B-1,Home Depot,800,900,https://example.com/a,confirmed\n"
         "2026-07-26,Kegco,K309B-1,Home Depot,810,900,https://example.com/b,estimated\n",
         encoding="utf-8",
     )
@@ -1725,7 +1730,7 @@ def test_interrupted_repair_consumes_attempt_before_spawn_and_requires_review(
 
     (evidence_repo / "history.csv").write_text(
         "date,brand,model,retailer,price,list_price,source,data_quality\n"
-        "2026-07-27,Kegco,K309B-1,Home Depot,800,900,https://example.com/a,confirmed\n"
+        f"{(START.date() - timedelta(days=1)).isoformat()},Kegco,K309B-1,Home Depot,800,900,https://example.com/a,confirmed\n"
         "2026-07-26,Kegco,K309B-1,Home Depot,810,900,https://example.com/b,estimated\n",
         encoding="utf-8",
     )
@@ -1882,7 +1887,7 @@ def test_state_schema_rejects_illegal_status_evidence_and_terminal_without_block
         evidence._validate_state_shape(extra)
     no_blocker = copy.deepcopy(original)
     no_blocker["status"] = "failed"
-    no_blocker["finished_at_utc"] = "2026-07-28T12:02:00Z"
+    no_blocker["finished_at_utc"] = _utc_text(AFTER)
     no_blocker["origin_at_finish"] = _origin_for_head(evidence_repo, AFTER)
     with pytest.raises(evidence.RunEvidenceError, match="blocker"):
         evidence._validate_state_shape(no_blocker)

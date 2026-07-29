@@ -138,20 +138,34 @@ def validate_refresh_status(refresh: dict) -> dict:
     if sum(quality.values()) != refresh["row_count"]:
         raise ValueError("quality_counts must equal row_count")
     if refresh["source_count"] != refresh["row_count"]:
-        raise ValueError("source_count must equal row_count for the durable successful snapshot")
+        raise ValueError("source_count must equal row_count for the durable snapshot")
 
     success_at = parse_utc(normalized["data_refreshed_at_utc"])
     attempt_at = parse_utc(normalized["last_attempt_at_utc"])
     if success_at is not None:
         if refresh["row_count"] <= 0:
             raise ValueError("a successful data refresh requires a positive row_count")
-        expected_quality = {
-            "verified": refresh["row_count"],
-            "estimated": 0,
-            "blocked": 0,
-        }
-        if quality != expected_quality:
-            raise ValueError("durable successful snapshot quality must be fully verified")
+        if status in FAILURE_STATUSES:
+            legacy_preserved_snapshot = quality == {
+                "verified": refresh["row_count"],
+                "estimated": 0,
+                "blocked": 0,
+            }
+            mixed_partial_snapshot = (
+                quality["verified"] > 0
+                and quality["blocked"] > 0
+                and quality["estimated"] == 0
+            )
+            if not (legacy_preserved_snapshot or mixed_partial_snapshot):
+                raise ValueError("durable snapshot after an unsuccessful attempt has invalid quality counts")
+        else:
+            expected_quality = {
+                "verified": refresh["row_count"],
+                "estimated": 0,
+                "blocked": 0,
+            }
+            if quality != expected_quality:
+                raise ValueError("durable successful snapshot quality must be fully verified")
     elif refresh["row_count"] != 0 or any(quality.values()):
         raise ValueError("status without a successful refresh cannot claim snapshot rows")
 
@@ -344,7 +358,7 @@ def apply_refresh_outcome(
     *,
     now: datetime | None = None,
 ) -> tuple[list[dict], dict, bool]:
-    """Apply only a complete current success; otherwise preserve the snapshot."""
+    """Apply proven rows from complete or partial current evidence."""
     status = validate_refresh_status(prior_status)
     if not isinstance(prior_listings, list) or not isinstance(candidate_listings, list):
         raise ValueError("listings must be arrays")
@@ -402,21 +416,44 @@ def apply_refresh_outcome(
     if outcome_status == "failed" and not (confirmed == 0 and failed == expected_count):
         raise ValueError("failed requires zero confirmed and every target failed")
 
-    if outcome_status == "success":
+    if outcome_status in {"success", "partial"}:
         if len(candidate_listings) != expected_count:
-            raise ValueError("success requires every target to be confirmed")
+            raise ValueError(f"{outcome_status} requires every target to remain represented")
         candidate_identities = _stable_identity_set(candidate_listings, "candidate")
         if candidate_identities != prior_identities:
-            raise ValueError("successful candidate identity set must exactly match the prior snapshot")
+            raise ValueError(f"{outcome_status} candidate identity set must exactly match the prior snapshot")
         attempt_iso = utc_iso(attempted_at)
+        prior_by_identity = {
+            tuple(str(row.get(field) or "").strip() for field in ("brand", "model", "retailer", "source_url")): row
+            for row in prior_listings
+        }
+        candidate_confirmed = 0
+        candidate_blocked = 0
         for index, row in enumerate(candidate_listings):
-            if row.get("data_quality") != "confirmed":
-                raise ValueError(f"successful row {index} is not confirmed")
-            if utc_iso(row.get("retrieved")) != attempt_iso:
-                raise ValueError(f"successful row {index} is not from the exact current attempt")
-            _require_finite_positive(row.get("current_price"), f"successful row {index} current_price")
-            if row.get("list_price") not in (None, ""):
-                _require_finite_positive(row.get("list_price"), f"successful row {index} list_price")
+            quality_value = row.get("data_quality")
+            if quality_value == "confirmed":
+                candidate_confirmed += 1
+                if utc_iso(row.get("retrieved")) != attempt_iso:
+                    raise ValueError(f"confirmed row {index} is not from the exact current attempt")
+                _require_finite_positive(row.get("current_price"), f"confirmed row {index} current_price")
+                if row.get("list_price") not in (None, ""):
+                    _require_finite_positive(row.get("list_price"), f"confirmed row {index} list_price")
+                continue
+            if outcome_status != "partial" or quality_value != "blocked":
+                raise ValueError(f"{outcome_status} row {index} has invalid data quality")
+            candidate_blocked += 1
+            identity = tuple(
+                str(row.get(field) or "").strip()
+                for field in ("brand", "model", "retailer", "source_url")
+            )
+            prior = prior_by_identity[identity]
+            for field in ("current_price", "list_price", "retrieved"):
+                if row.get(field) != prior.get(field):
+                    raise ValueError(f"blocked row {index} changed unverified {field}")
+        if candidate_confirmed != confirmed or candidate_blocked != failed:
+            raise ValueError(f"{outcome_status} candidate quality counts do not match the outcome")
+
+    if outcome_status == "success":
         updated = copy.deepcopy(status)
         updated.update(
             {
@@ -436,6 +473,27 @@ def apply_refresh_outcome(
             }
         )
         return copy.deepcopy(candidate_listings), validate_refresh_status(updated), True
+
+    if outcome_status == "partial":
+        reason = str(outcome.get("reason") or "").strip()
+        if not reason:
+            raise ValueError("partial refresh outcome requires a reason")
+        updated = copy.deepcopy(status)
+        updated.update(
+            {
+                "last_attempt_at_utc": utc_iso(attempted_at),
+                "last_attempt_status": "partial",
+                "last_attempt_reason": reason,
+                "quality_counts": {
+                    "verified": confirmed,
+                    "estimated": 0,
+                    "blocked": failed,
+                },
+                "rendered_at_utc": None,
+                "published_at_utc": None,
+            }
+        )
+        return copy.deepcopy(candidate_listings), validate_refresh_status(updated), False
 
     reason = str(outcome.get("reason") or "Refresh attempt did not complete.").strip()
     if not reason:

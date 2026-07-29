@@ -17,11 +17,12 @@ from urllib.parse import urlsplit
 try:
     from .refresh_state import (
         build_payload_source_identity,
+        parse_utc,
         utc_iso,
         validate_refresh_status,
     )
 except ImportError:
-    from refresh_state import build_payload_source_identity, utc_iso, validate_refresh_status
+    from refresh_state import build_payload_source_identity, parse_utc, utc_iso, validate_refresh_status
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,12 +43,18 @@ EMAIL_PAYLOAD_FIELDS = {
     "source_identity",
 }
 ALLOWED_RETAIL_HOSTS = {
+    "ajmadison.com",
+    "www.ajmadison.com",
+    "bath4all.com",
+    "www.bath4all.com",
+    "beveragefactory.com",
+    "www.beveragefactory.com",
     "kegco.com",
     "www.kegco.com",
-    "edgestar.com",
-    "www.edgestar.com",
     "homedepot.com",
     "www.homedepot.com",
+    "shopappliances.com",
+    "www.shopappliances.com",
 }
 ALLOWED_LOCAL_RUNTIME = {
     "assets/kegerator-hero.png",
@@ -938,20 +945,35 @@ def validate_repository(root: Path = ROOT) -> frozenset[str]:
     refresh = validate_refresh_status(
         json.loads((root / "data" / "refresh-status.json").read_text(encoding="utf-8"))
     )
-    success_at = refresh["data_refreshed_at_utc"]
     if refresh["source_count"] != len(listings) or refresh["row_count"] != len(listings):
         raise AudienceBoundaryError("refresh counts must represent every checked-in listing")
-    if refresh["quality_counts"] != {
-        "verified": len(listings),
-        "estimated": 0,
-        "blocked": 0,
-    }:
-        raise AudienceBoundaryError("refresh quality counts must represent one verified snapshot")
-    if any(
-        row.get("data_quality") != "confirmed" or utc_iso(row.get("retrieved")) != success_at
+    row_quality = {
+        "verified": sum(row.get("data_quality") == "confirmed" for row in listings),
+        "estimated": sum(row.get("data_quality") == "estimated" for row in listings),
+        "blocked": sum(row.get("data_quality") == "blocked" for row in listings),
+    }
+    if sum(row_quality.values()) != len(listings) or refresh["quality_counts"] != row_quality:
+        raise AudienceBoundaryError("refresh quality counts must exactly match listing provenance")
+    attempt_at = parse_utc(refresh["last_attempt_at_utc"])
+    for index, row in enumerate(listings):
+        retrieved = parse_utc(row.get("retrieved"))
+        if retrieved is None or (attempt_at is not None and retrieved > attempt_at):
+            raise AudienceBoundaryError(f"listing row {index} has invalid retrieval evidence")
+        if refresh["last_attempt_status"] == "partial":
+            if row.get("data_quality") == "confirmed" and retrieved != attempt_at:
+                raise AudienceBoundaryError(
+                    f"confirmed listing row {index} is not from the current partial attempt"
+                )
+            if row.get("data_quality") == "blocked" and retrieved == attempt_at:
+                raise AudienceBoundaryError(
+                    f"blocked listing row {index} claims the current partial attempt"
+                )
+    if refresh["last_attempt_status"] == "success" and any(
+        row.get("data_quality") != "confirmed"
+        or utc_iso(row.get("retrieved")) != refresh["data_refreshed_at_utc"]
         for row in listings
     ):
-        raise AudienceBoundaryError("listings must represent the exact last successful data refresh")
+        raise AudienceBoundaryError("successful listings must match the exact successful refresh")
     allowed_sources = listing_source_urls(listings)
     index_path = root / CANONICAL_INDEX_PATH
     validate_html(

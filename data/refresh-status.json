@@ -1,8 +1,8 @@
 {
   "data_refreshed_at_utc": "2026-07-04T12:00:00Z",
-  "last_attempt_at_utc": "2026-07-28T12:51:08.996645Z",
+  "last_attempt_at_utc": "2026-07-29T19:16:45.066976Z",
   "last_attempt_status": "partial",
-  "last_attempt_reason": "4 of 24 targets were confirmed; 20 did not return current evidence.",
+  "last_attempt_reason": "21 of 24 targets were confirmed; 3 did not return current evidence.",
   "cadence_minutes": 1440,
   "grace_minutes": 180,
   "timezone": "America/Chicago",
@@ -10,9 +10,9 @@
   "source_count": 24,
   "row_count": 24,
   "quality_counts": {
-    "verified": 24,
+    "verified": 21,
     "estimated": 0,
-    "blocked": 0
+    "blocked": 3
   },
   "rendered_at_utc": null,
   "published_at_utc": null

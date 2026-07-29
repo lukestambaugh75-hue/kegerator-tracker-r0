@@ -177,15 +177,15 @@ def test_seed_data_covers_requested_models_and_confirmed_rows():
     assert required.issubset(models)
     assert any(
         row["model"] == "K309SS-2"
-        and row["retailer"] == "Home Depot"
-        and row["source_url"] == "https://www.homedepot.com/s/K309SS-2"
+        and row["retailer"] == "BeverageFactory.com"
+        and row["source_url"].startswith("https://www.beveragefactory.com/")
         and float(row["current_price"]) > 0
         for row in listings
     )
     assert any(
         row["model"] == "BR7001SSOD"
-        and row["retailer"] == "EdgeStar.com"
-        and row["source_url"] == "https://www.edgestar.com/search?q=BR7001SSOD"
+        and row["retailer"] == "Bath4All"
+        and row["source_url"].startswith("https://bath4all.com/products/")
         and float(row["current_price"]) > 0
         for row in listings
     )
@@ -740,6 +740,79 @@ def test_structured_product_price_matches_kegco_manufacturer_prefixed_sku():
     assert parse_structured_product_price(jsonld_page(product), "HK38SSU-2") == 1822.01
 
 
+def test_structured_product_price_supports_exact_product_group_variant():
+    from scripts.refresh import parse_structured_product_price
+
+    group = {
+        "@context": "https://schema.org",
+        "@type": "ProductGroup",
+        "productGroupID": "SBC68",
+        "hasVariant": [
+            {
+                "sku": "SBC683OSTWIN",
+                "offers": {
+                    "@type": "Offer",
+                    "price": "2049",
+                    "priceCurrency": "USD",
+                },
+            },
+            {"sku": "SBC682PNRTWIN"},
+        ],
+    }
+
+    assert parse_structured_product_price(jsonld_page(group), "SBC683OSTWIN") == 2049.0
+
+
+def test_structured_product_price_supports_exact_microdata_product_offer():
+    from scripts.refresh import parse_structured_product_price
+
+    page = """
+    <main itemscope itemtype="http://schema.org/Product">
+      <meta itemprop="sku" content="K309SS-2NK">
+      <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+        <meta itemprop="priceCurrency" content="USD">
+        <meta itemprop="price" content="849.00">
+      </div>
+    </main>
+    """
+
+    assert parse_structured_product_price(page, "K309SS-2NK") == 849.0
+    assert parse_structured_product_price(page, "K309SS-2") is None
+
+
+def test_microdata_product_flushes_when_retailer_markup_is_unbalanced():
+    from scripts.refresh import parse_structured_product_price
+
+    page = """
+    <div><main itemscope itemtype="http://schema.org/Product">
+      <meta itemprop="sku" content="K309SS-2NK">
+      <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+        <meta itemprop="priceCurrency" content="USD">
+        <meta itemprop="price" content="849.00">
+    """
+
+    assert parse_structured_product_price(page, "K309SS-2NK") == 849.0
+
+
+def test_try_live_price_uses_controlled_source_model_identity(monkeypatch):
+    from scripts import refresh
+
+    row = listing_fixture("K309SS-2", 800)
+    row["source_model"] = "K309SS-2NK"
+    product = {
+        "@type": "Product",
+        "sku": "K309SS-2NK",
+        "offers": {"@type": "Offer", "price": "849", "priceCurrency": "USD"},
+    }
+    monkeypatch.setattr(
+        refresh,
+        "fetch_url",
+        lambda url, use_cache=False: (jsonld_page(product), url),
+    )
+
+    assert refresh.try_live_price(row, offline=False) == (849.0, "parsed")
+
+
 def test_structured_price_stays_bound_to_matched_product_own_offer(monkeypatch):
     from scripts import refresh
 
@@ -966,8 +1039,8 @@ def test_requested_url_rejects_encoded_ambiguous_or_traversal_path_before_fetch(
     assert refresh.fetch_url(requested, use_cache=False) is None
 
 
-@pytest.mark.parametrize("attempt_status", ["blocked", "partial", "failed"])
-def test_unsuccessful_attempt_preserves_entire_snapshot_and_changes_attempt_only(attempt_status):
+@pytest.mark.parametrize("attempt_status", ["blocked", "failed"])
+def test_zero_evidence_attempt_preserves_entire_snapshot_and_changes_attempt_only(attempt_status):
     from scripts.refresh_state import apply_refresh_outcome
 
     prior_rows = [listing_fixture("ONE", 800), listing_fixture("TWO", 900)]
@@ -978,8 +1051,8 @@ def test_unsuccessful_attempt_preserves_entire_snapshot_and_changes_attempt_only
         "reason": f"{attempt_status} source evidence",
         "attempted_at_utc": "2026-07-11T12:00:00Z",
         "expected_count": 2,
-        "confirmed_count": 0 if attempt_status != "partial" else 1,
-        "failed_count": 2 if attempt_status != "partial" else 1,
+        "confirmed_count": 0,
+        "failed_count": 2,
     }
 
     final_rows, final_status, succeeded = apply_refresh_outcome(
@@ -998,6 +1071,70 @@ def test_unsuccessful_attempt_preserves_entire_snapshot_and_changes_attempt_only
     assert final_status["quality_counts"] == prior_status["quality_counts"]
     assert final_status["last_attempt_at_utc"] == outcome["attempted_at_utc"]
     assert final_status["last_attempt_status"] == attempt_status
+
+
+def test_partial_attempt_persists_only_current_confirmed_price_and_preserves_blocked_price():
+    from scripts.refresh_state import apply_refresh_outcome
+
+    prior_rows = [listing_fixture("ONE", 800), listing_fixture("TWO", 900)]
+    attempted_at = "2026-07-11T12:00:00Z"
+    candidate_rows = [
+        listing_fixture("ONE", 700, attempted_at),
+        copy.deepcopy(prior_rows[1]),
+    ]
+    candidate_rows[1]["data_quality"] = "blocked"
+    outcome = {
+        "status": "partial",
+        "reason": "1 of 2 targets confirmed from current evidence.",
+        "attempted_at_utc": attempted_at,
+        "expected_count": 2,
+        "confirmed_count": 1,
+        "failed_count": 1,
+    }
+
+    final_rows, final_status, succeeded = apply_refresh_outcome(
+        prior_rows,
+        refresh_fixture(),
+        candidate_rows,
+        outcome,
+        now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert succeeded is False
+    assert final_rows == candidate_rows
+    assert final_rows[0]["current_price"] == 700
+    assert final_rows[1]["current_price"] == 900
+    assert final_status["data_refreshed_at_utc"] == "2026-07-04T12:00:00Z"
+    assert final_status["last_attempt_status"] == "partial"
+    assert final_status["quality_counts"] == {"verified": 1, "estimated": 0, "blocked": 1}
+
+
+@pytest.mark.parametrize("field", ["current_price", "list_price", "retrieved"])
+def test_partial_attempt_rejects_unverified_changes_to_blocked_row(field):
+    from scripts.refresh_state import apply_refresh_outcome
+
+    prior_rows = [listing_fixture("ONE", 800), listing_fixture("TWO", 900)]
+    attempted_at = "2026-07-11T12:00:00Z"
+    candidate_rows = [listing_fixture("ONE", 700, attempted_at), copy.deepcopy(prior_rows[1])]
+    candidate_rows[1]["data_quality"] = "blocked"
+    candidate_rows[1][field] = "tampered" if field == "retrieved" else 1
+    outcome = {
+        "status": "partial",
+        "reason": "1 of 2 targets confirmed from current evidence.",
+        "attempted_at_utc": attempted_at,
+        "expected_count": 2,
+        "confirmed_count": 1,
+        "failed_count": 1,
+    }
+
+    with pytest.raises(ValueError, match="changed unverified"):
+        apply_refresh_outcome(
+            prior_rows,
+            refresh_fixture(),
+            candidate_rows,
+            outcome,
+            now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+        )
 
 
 def test_only_complete_success_replaces_snapshot_and_advances_success_time():
@@ -1345,6 +1482,52 @@ def test_run_refresh_writes_snapshot_and_exact_attempt_history_only_on_success(t
     assert {row["date"] for row in history_rows} == {"2026-07-11"}
 
 
+def test_run_refresh_persists_partial_snapshot_and_histories_confirmed_rows_only(tmp_path, monkeypatch):
+    from scripts import refresh
+
+    listings_path = tmp_path / "listings.json"
+    specs_path = tmp_path / "specs.json"
+    status_path = tmp_path / "refresh-status.json"
+    history_path = tmp_path / "history.csv"
+    original_rows = [listing_fixture("ONE", 800), listing_fixture("TWO", 900)]
+    listings_path.write_text(json.dumps(original_rows) + "\n", encoding="utf-8")
+    specs_path.write_text("[]\n", encoding="utf-8")
+    status_path.write_text(json.dumps(refresh_fixture()) + "\n", encoding="utf-8")
+    history_path.write_text(
+        "date,brand,model,retailer,price,list_price,source,data_quality\n",
+        encoding="utf-8",
+    )
+    attempted_at = "2026-07-11T12:00:00Z"
+    candidate = [listing_fixture("ONE", 700, attempted_at), copy.deepcopy(original_rows[1])]
+    candidate[1]["data_quality"] = "blocked"
+    outcome = {
+        "status": "partial",
+        "reason": "1 of 2 targets confirmed from current evidence.",
+        "attempted_at_utc": attempted_at,
+        "expected_count": 2,
+        "confirmed_count": 1,
+        "failed_count": 1,
+    }
+    monkeypatch.setattr(refresh, "refresh_listings", lambda *args, **kwargs: (candidate, outcome))
+
+    result = refresh.run_refresh(
+        listings_path=listings_path,
+        specs_path=specs_path,
+        status_path=status_path,
+        history_path=history_path,
+        now=datetime(2026, 7, 11, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert result["status"] == "partial"
+    assert result["snapshot_updated"] is True
+    assert result["history_appended"] == 1
+    assert json.loads(listings_path.read_text(encoding="utf-8")) == candidate
+    stored_status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert stored_status["quality_counts"] == {"verified": 1, "estimated": 0, "blocked": 1}
+    history_rows = list(csv.DictReader(io.StringIO(history_path.read_text(encoding="utf-8"))))
+    assert [row["model"] for row in history_rows] == ["ONE"]
+
+
 def test_history_repair_check_write_idempotence_and_validation(tmp_path):
     from scripts.repair_history import repair_history
 
@@ -1431,7 +1614,7 @@ def test_history_repair_cli_reports_exact_check_counts_and_exit_codes(tmp_path):
     assert after.stdout.strip() == "24 kept, 0 would remove"
 
 
-def test_checked_in_snapshot_and_history_remain_success_only():
+def test_checked_in_snapshot_and_history_match_truthful_partial_refresh():
     from scripts.refresh_state import validate_refresh_status
 
     listings = json.loads(Path("data/listings.json").read_text(encoding="utf-8"))
@@ -1441,11 +1624,16 @@ def test_checked_in_snapshot_and_history_remain_success_only():
     history_rows = list(csv.DictReader(Path("history.csv").open(newline="", encoding="utf-8")))
 
     assert len(listings) == 24
-    assert {row["data_quality"] for row in listings} == {"confirmed"}
-    assert {row["retrieved"] for row in listings} == {status["data_refreshed_at_utc"]}
+    confirmed = [row for row in listings if row["data_quality"] == "confirmed"]
+    blocked = [row for row in listings if row["data_quality"] == "blocked"]
+    assert len(confirmed) == 21
+    assert len(blocked) == 3
+    assert {row["retrieved"] for row in confirmed} == {status["last_attempt_at_utc"]}
+    assert all(row["retrieved"] != status["last_attempt_at_utc"] for row in blocked)
     assert status["source_count"] == len(listings)
     assert status["row_count"] == len(listings)
-    assert status["quality_counts"] == {"verified": 24, "estimated": 0, "blocked": 0}
+    assert status["last_attempt_status"] == "partial"
+    assert status["quality_counts"] == {"verified": 21, "estimated": 0, "blocked": 3}
     assert len(history_rows) >= 24
     assert {row["data_quality"] for row in history_rows} == {"confirmed"}
 

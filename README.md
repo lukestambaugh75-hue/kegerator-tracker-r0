@@ -11,7 +11,7 @@ https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/
 ## What It Tracks
 
 - Kegco, EdgeStar, Danby, Summit, and VEVOR kegerators.
-- Home Depot, Kegco.com, EdgeStar.com, Danby via Home Depot, Summit via Home Depot.
+- Direct product pages at Kegco.com, Beverage Factory, Bath4All, Shop Appliances, and AJ Madison, plus three Home Depot-only fallback rows.
 - Amazon/Keepa can be added later with `KEEPA_API_KEY`; no Amazon prices are fabricated without that evidence.
 
 ## Files
@@ -19,7 +19,7 @@ https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/
 - `data/listings.json` - current model x retailer price observations.
 - `data/specs.json` - reference specs including cooling range, fan-forced cooling, outdoor rating, and computed garage suitability.
 - `history.csv` - append-only ledger with `date,brand,model,retailer,price,list_price,source,data_quality`.
-- `scripts/refresh.py` - normalizes data, attempts polite cached source checks, rewrites listings/specs, and appends new history rows.
+- `scripts/refresh.py` - normalizes data, reads exact model-bound USD offers from direct product pages, safely publishes proven rows from complete or partial attempts, and appends current confirmed history rows.
 - `scripts/audience_guard.py` - fail-closed check for the standalone link graph, exact current listing sources, local runtime files, and Luke + Devin recipient boundary.
 - `scripts/run_evidence.py` - detached per-run terminal summary; it binds refresh, result, deployment, payload, and outer receipt evidence without performing any of those actions.
 - `scripts/check_public_pages.py` - proves the public files are byte-for-byte the clean pushed local `HEAD`, not merely internally consistent public files.
@@ -44,9 +44,9 @@ The audience guard pins the exact `index.html` path and SHA-256 bytes before app
 
 ## Data Quality
 
-`confirmed` means a row came from a confirmed source snapshot or live parse. `snapshot_varies` means the same source may show different visible placements in the same day. `estimated` means the refresh could not confirm a new price and preserved the last known value as an estimate instead of pretending it is freshly confirmed.
+`confirmed` means the row's exact model identity and USD offer were read during the current attempt. `blocked` means the source could not prove a current price, so the last known price and retrieval time were preserved without pretending they are fresh. Retailer-only SKU aliases may be declared as `source_model`, but the parser still requires an exact identity match.
 
-No row should be promoted as confirmed unless the source supplied the price. If a source blocks, the dashboard keeps the caveat visible.
+No row is promoted as confirmed unless its source supplied the price. A partial attempt updates and histories the proven rows while leaving each failed row visibly blocked; one blocked retailer no longer freezes every other product. The three remaining Home Depot-only rows stay blocked when Home Depot rejects unattended requests rather than accepting search snippets or guessed prices.
 
 ## Adding Models
 

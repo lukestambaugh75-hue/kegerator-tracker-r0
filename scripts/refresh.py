@@ -291,6 +291,114 @@ class _JsonLdScripts(HTMLParser):
             self._parts = None
 
 
+class _MicrodataProducts(HTMLParser):
+    """Collect Product/Offer microdata without borrowing unrelated prices."""
+
+    _VOID_TAGS = {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.products: list[dict] = []
+        self._depth = 0
+        self._product: dict | None = None
+        self._product_depth: int | None = None
+        self._offer: dict | None = None
+        self._offer_depth: int | None = None
+        self._capture: tuple[str, int, list[str]] | None = None
+
+    @staticmethod
+    def _item_type(attributes: dict[str, str]) -> str:
+        return attributes.get("itemtype", "").rstrip("/").rsplit("/", 1)[-1].casefold()
+
+    def _store_property(self, name: str, value: str) -> None:
+        value = value.strip()
+        if not value:
+            return
+        if self._offer is not None and name in {"price", "lowPrice", "priceCurrency"}:
+            self._offer[name] = value
+        elif self._product is not None and name in {"model", "mpn", "sku", "productID"}:
+            self._product[name] = value
+
+    def handle_starttag(self, tag, attrs) -> None:
+        tag = tag.casefold()
+        attributes = {str(name): str(value or "") for name, value in attrs}
+        item_type = self._item_type(attributes)
+        is_scope = "itemscope" in attributes
+        if is_scope and item_type == "product" and self._product is None:
+            self._product = {"@type": "Product", "offers": []}
+            self._product_depth = self._depth
+        elif is_scope and item_type in {"offer", "aggregateoffer"} and self._product is not None:
+            self._offer = {"@type": "Offer" if item_type == "offer" else "AggregateOffer"}
+            self._offer_depth = self._depth
+
+        item_properties = attributes.get("itemprop", "").split()
+        for name in item_properties:
+            value = attributes.get("content") or attributes.get("value")
+            if value:
+                self._store_property(name, value)
+            elif tag not in self._VOID_TAGS and name in {
+                "model",
+                "mpn",
+                "sku",
+                "productID",
+                "price",
+                "lowPrice",
+                "priceCurrency",
+            }:
+                self._capture = (name, self._depth, [])
+        if tag not in self._VOID_TAGS:
+            self._depth += 1
+
+    def handle_data(self, data: str) -> None:
+        if self._capture is not None:
+            self._capture[2].append(data)
+
+    def handle_endtag(self, tag) -> None:
+        if tag.casefold() in self._VOID_TAGS:
+            return
+        self._depth = max(0, self._depth - 1)
+        if self._capture is not None and self._capture[1] == self._depth:
+            name, _, parts = self._capture
+            self._store_property(name, "".join(parts))
+            self._capture = None
+        if self._offer is not None and self._offer_depth == self._depth:
+            assert self._product is not None
+            self._product["offers"].append(self._offer)
+            self._offer = None
+            self._offer_depth = None
+        if self._product is not None and self._product_depth == self._depth:
+            self.products.append(self._product)
+            self._product = None
+            self._product_depth = None
+
+    def close(self) -> None:
+        """Flush a valid open Product scope when retailer HTML is imperfect."""
+        super().close()
+        if self._offer is not None and self._product is not None:
+            self._product["offers"].append(self._offer)
+            self._offer = None
+            self._offer_depth = None
+        if self._product is not None:
+            self.products.append(self._product)
+            self._product = None
+            self._product_depth = None
+
+
 def _schema_types(node: dict) -> set[str]:
     raw = node.get("@type")
     values = raw if isinstance(raw, list) else [raw]
@@ -308,8 +416,15 @@ def _iter_product_nodes(value):
         return
     if not isinstance(value, dict):
         return
-    if "product" in _schema_types(value):
+    types = _schema_types(value)
+    if "product" in types:
         yield value
+    elif "productgroup" in types:
+        variants = value.get("hasVariant")
+        variants = variants if isinstance(variants, list) else [variants]
+        for variant in variants:
+            if isinstance(variant, dict) and isinstance(variant.get("offers"), (dict, list)):
+                yield variant
     for child in value.values():
         if isinstance(child, (dict, list)):
             yield from _iter_product_nodes(child)
@@ -376,7 +491,7 @@ def _own_usd_offer_prices(product: dict) -> list[float]:
 
 
 def parse_structured_product_price(page_html: str | None, expected_model: object) -> float | None:
-    """Read USD price only from the matched JSON-LD Product's own offers."""
+    """Read USD price only from one exact JSON-LD or microdata product offer."""
     if not page_html:
         return None
     parser = _JsonLdScripts()
@@ -394,9 +509,25 @@ def parse_structured_product_price(page_html: str | None, expected_model: object
         for product in _iter_product_nodes(value):
             if _has_exact_dedicated_identity(product, expected_model):
                 matching_products.append(product)
-    if len(matching_products) != 1:
+    if len(matching_products) == 1:
+        prices = _own_usd_offer_prices(matching_products[0])
+        if prices:
+            return min(prices)
+
+    microdata = _MicrodataProducts()
+    try:
+        microdata.feed(page_html)
+        microdata.close()
+    except Exception:
         return None
-    prices = _own_usd_offer_prices(matching_products[0])
+    matching_microdata = [
+        product
+        for product in microdata.products
+        if _has_exact_dedicated_identity(product, expected_model)
+    ]
+    if len(matching_microdata) != 1:
+        return None
+    prices = _own_usd_offer_prices(matching_microdata[0])
     return min(prices) if prices else None
 
 
@@ -416,7 +547,8 @@ def try_live_price(row: dict, offline: bool) -> tuple[float | None, str]:
         validate_final_response_url(url, final_url)
     except ValueError:
         return None, "redirect_rejected"
-    amount = parse_structured_product_price(page_html, row.get("model"))
+    expected_source_model = row.get("source_model") or row.get("model")
+    amount = parse_structured_product_price(page_html, expected_source_model)
     return amount, "parsed" if amount is not None else "structured_product_missing"
 
 
@@ -569,14 +701,25 @@ def run_refresh(
     )
     write_json(Path(status_path), final_status)
     appended = 0
-    if succeeded:
+    snapshot_updated = succeeded or outcome["status"] == "partial"
+    if snapshot_updated:
         write_json(Path(listings_path), final_listings)
+        current_rows = [
+            row
+            for row in final_listings
+            if row.get("data_quality") == "confirmed"
+            and utc_iso(row.get("retrieved")) == utc_iso(outcome["attempted_at_utc"])
+        ]
         appended = append_history(
-            final_listings,
+            current_rows,
             Path(history_path),
             outcome["attempted_at_utc"],
         )
-    return {**outcome, "history_appended": appended}
+    return {
+        **outcome,
+        "snapshot_updated": snapshot_updated,
+        "history_appended": appended,
+    }
 
 
 def main() -> None:

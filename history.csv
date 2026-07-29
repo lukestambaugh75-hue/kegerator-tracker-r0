@@ -23,3 +23,24 @@ date,brand,model,retailer,price,list_price,source,data_quality
 2026-07-04,EdgeStar,BR2001SS,EdgeStar.com,366,,https://www.edgestar.com/search?q=BR2001SS,confirmed
 2026-07-04,EdgeStar,BR2001BL,EdgeStar.com,469,,https://www.edgestar.com/search?q=BR2001BL,confirmed
 2026-07-04,EdgeStar,BR7001SSOD,EdgeStar.com,472.11,,https://www.edgestar.com/search?q=BR7001SSOD,confirmed
+2026-07-29,Danby,DKC054A1BSL2DB,Shop Appliances,749.99,,https://www.shopappliances.com/products/danby-dkc054a1bsl2db,confirmed
+2026-07-29,EdgeStar,BR2001BL,Bath4All,469,,https://bath4all.com/products/edgestar-br2001bl-20-inch-wide-ultra-low-temp-refrigerator-for-kegerator-conversion-black,confirmed
+2026-07-29,EdgeStar,BR2001SS,Bath4All,499,,https://bath4all.com/products/edgestar-br2001ss-20-inch-wide-ultra-low-temp-refrigerator-for-kegerator-conversion,confirmed
+2026-07-29,EdgeStar,BR3002BL,Bath4All,599,,https://bath4all.com/products/edgestar-br3002bl-24-inch-wide-kegerator-conversion-refrigerator-for-full-size-kegs-black,confirmed
+2026-07-29,EdgeStar,BR7001SSOD,Bath4All,1739,,https://bath4all.com/products/edgestar-br7001ssod-24-inch-wide-outdoor-kegerator-conversion-refrigerator,confirmed
+2026-07-29,EdgeStar,KC1000SS,Bath4All,559,,https://bath4all.com/products/edgestar-kc1000ss-18-inch-wide-kegerator,confirmed
+2026-07-29,Kegco,HBK209S-2,BeverageFactory.com,879.75,,https://www.beveragefactory.com/draftbeer/kegerators/home-brew/hbk209s-2.html,confirmed
+2026-07-29,Kegco,HK38BSC-2,BeverageFactory.com,1739.5,,https://www.beveragefactory.com/draftbeer/kegerators/commercial/kegco-hk38bsc-2-dual-faucet-digital-commercial-undercounter-kegerator.html,confirmed
+2026-07-29,Kegco,HK38BSU-2,BeverageFactory.com,1649.75,,https://www.beveragefactory.com/draftbeer/kegerators/dualkegerator/kegco-HK38BSU-2-dual-faucet-digital-undercounter-kegerator.html,confirmed
+2026-07-29,Kegco,HK38SSC-L-2,BeverageFactory.com,1789,,https://www.beveragefactory.com/draftbeer/kegerators/commercial/kegco-hk38ssc-l-2-dual-faucet-digital-commercial-outdoor-kegerator.html,confirmed
+2026-07-29,Kegco,HK38SSU-2,Kegco.com,1822.01,1913,https://kegco.com/products/24-wide-dual-tap-all-stainless-steel-outdoor-builtin-right-hinge-kegerator-with-kit,confirmed
+2026-07-29,Kegco,K209SS-1,BeverageFactory.com,819.2,,https://www.beveragefactory.com/draftbeer/kegerators/kegco_k209ss-1_kegerator.html,confirmed
+2026-07-29,Kegco,K309B-1,BeverageFactory.com,898.9,,https://www.beveragefactory.com/draftbeer/kegerators/kegco_k309b-1_digital_kegerator.html,confirmed
+2026-07-29,Kegco,K309B-1,Kegco.com,914.55,961,https://kegco.com/products/24-wide-single-tap-black-digital-kegerator,confirmed
+2026-07-29,Kegco,K309B-2,BeverageFactory.com,929.9,,https://www.beveragefactory.com/draftbeer/kegerators/dualkegerator/kegco_k309b-2_dual_faucet_kegerator.html,confirmed
+2026-07-29,Kegco,K309B-2,Kegco.com,1004.85,1055.99,https://kegco.com/products/24-wide-dual-tap-black-digital-kegerator,confirmed
+2026-07-29,Kegco,K309SS-2,BeverageFactory.com,849,,https://www.beveragefactory.com/draftbeer/kegerators/dualkegerator/kegco_k309ss-2_dual_faucet_kegerator.html,confirmed
+2026-07-29,Kegco,K309SS-2,Kegco.com,869.71,1066.99,https://kegco.com/products/24-wide-dual-tap-stainless-steel-digital-kegerator,confirmed
+2026-07-29,Kegco,K309X-1,BeverageFactory.com,947,,https://www.beveragefactory.com/draftbeer/kegerators/kegco-k309x-1-digital-kegerator.html,confirmed
+2026-07-29,Kegco,Z163S-2,BeverageFactory.com,855.46,,https://www.beveragefactory.com/draftbeer/kegerators/kegco-z163s-2-commercial-grade-digital-kegerator.html,confirmed
+2026-07-29,Summit,SBC683OSTWIN,AJ Madison,2049,,https://www.ajmadison.com/cgi-bin/ajmadison/SBC683OSTWIN.html,confirmed

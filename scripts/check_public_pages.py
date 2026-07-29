@@ -28,6 +28,7 @@ from scripts.audience_guard import (  # noqa: E402
 from scripts.refresh_state import (  # noqa: E402
     build_payload_source_identity,
     evaluate_refresh,
+    parse_utc,
     utc_iso,
     validate_refresh_status,
 )
@@ -254,23 +255,35 @@ def validate_public_status(
     *,
     now: datetime | None = None,
 ) -> dict:
-    """Prove public metadata represents the successful snapshot and visible state."""
+    """Prove public metadata matches every row's current evidence state."""
     refresh = validate_refresh_status(refresh_status)
     if not isinstance(listings, list) or not listings:
         raise AudienceBoundaryError("public listings must be a non-empty array")
     if refresh["source_count"] != len(listings) or refresh["row_count"] != len(listings):
         raise AudienceBoundaryError("public refresh counts do not match public listings")
-    expected_quality = {"verified": len(listings), "estimated": 0, "blocked": 0}
-    if refresh["quality_counts"] != expected_quality:
-        raise AudienceBoundaryError("public refresh quality counts do not represent the successful snapshot")
+    row_quality = {
+        "verified": sum(row.get("data_quality") == "confirmed" for row in listings),
+        "estimated": sum(row.get("data_quality") == "estimated" for row in listings),
+        "blocked": sum(row.get("data_quality") == "blocked" for row in listings),
+    }
+    if sum(row_quality.values()) != len(listings) or refresh["quality_counts"] != row_quality:
+        raise AudienceBoundaryError("public refresh quality counts do not match listing provenance")
     success_at = refresh["data_refreshed_at_utc"]
     if not success_at:
         raise AudienceBoundaryError("public status must record a successful data refresh")
+    attempt_at = parse_utc(refresh["last_attempt_at_utc"])
     for index, row in enumerate(listings):
-        if row.get("data_quality") != "confirmed":
-            raise AudienceBoundaryError(f"public listing {index} is not confirmed historical evidence")
-        if utc_iso(row.get("retrieved")) != success_at:
-            raise AudienceBoundaryError(f"public listing {index} is not from the successful snapshot")
+        retrieved = parse_utc(row.get("retrieved"))
+        if retrieved is None or (attempt_at is not None and retrieved > attempt_at):
+            raise AudienceBoundaryError(f"public listing {index} has invalid retrieval evidence")
+        if refresh["last_attempt_status"] == "success":
+            if row.get("data_quality") != "confirmed" or utc_iso(retrieved) != success_at:
+                raise AudienceBoundaryError(f"public listing {index} is not from the successful snapshot")
+        elif refresh["last_attempt_status"] == "partial":
+            if row.get("data_quality") == "confirmed" and retrieved != attempt_at:
+                raise AudienceBoundaryError(f"public listing {index} is not current confirmed evidence")
+            if row.get("data_quality") == "blocked" and retrieved == attempt_at:
+                raise AudienceBoundaryError(f"public listing {index} falsely claims current evidence")
     return evaluate_refresh(refresh, now=now or datetime.now(timezone.utc))
 
 

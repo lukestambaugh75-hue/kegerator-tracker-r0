@@ -1850,3 +1850,35 @@ def test_public_status_contract_matches_snapshot_and_historical_dashboard_treatm
     assert b"Last successful data refresh" in body
     assert b"Historical only" in body
     assert b"data/refresh-status.json" in body
+
+
+def test_public_status_accepts_truthful_partial_rows_and_rejects_false_current_blocked_row():
+    from scripts.check_public_pages import validate_public_status
+
+    attempted_at = "2026-07-11T12:00:00Z"
+    listings = [
+        listing_fixture("ONE", 700, attempted_at),
+        listing_fixture("TWO", 900),
+    ]
+    listings[1]["data_quality"] = "blocked"
+    status = refresh_fixture(
+        attempt_at=attempted_at,
+        attempt_status="partial",
+        attempt_reason="1 of 2 targets confirmed.",
+    )
+    status["quality_counts"] = {"verified": 1, "estimated": 0, "blocked": 1}
+
+    state = validate_public_status(
+        status,
+        listings,
+        now=datetime(2026, 7, 11, 13, 0, tzinfo=timezone.utc),
+    )
+    assert state["state"] == "Blocked"
+
+    listings[1]["retrieved"] = attempted_at
+    with pytest.raises(ValueError, match="falsely claims"):
+        validate_public_status(
+            status,
+            listings,
+            now=datetime(2026, 7, 11, 13, 0, tzinfo=timezone.utc),
+        )

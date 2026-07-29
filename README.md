@@ -11,7 +11,7 @@ https://lukestambaugh75-hue.github.io/kegerator-tracker-r0/
 ## What It Tracks
 
 - Kegco, EdgeStar, Danby, Summit, and VEVOR kegerators.
-- Direct product pages at Kegco.com, Beverage Factory, Bath4All, Shop Appliances, and AJ Madison, plus three Home Depot-only fallback rows.
+- Direct product pages at Kegco.com, Beverage Factory, Bath4All, Shop Appliances, and AJ Madison.
 - Amazon/Keepa can be added later with `KEEPA_API_KEY`; no Amazon prices are fabricated without that evidence.
 
 ## Files
@@ -46,7 +46,7 @@ The audience guard pins the exact `index.html` path and SHA-256 bytes before app
 
 `confirmed` means the row's exact model identity and USD offer were read during the current attempt. `blocked` means the source could not prove a current price, so the last known price and retrieval time were preserved without pretending they are fresh. Retailer-only SKU aliases may be declared as `source_model`, but the parser still requires an exact identity match.
 
-No row is promoted as confirmed unless its source supplied the price. A partial attempt updates and histories the proven rows while leaving each failed row visibly blocked; one blocked retailer no longer freezes every other product. The three remaining Home Depot-only rows stay blocked when Home Depot rejects unattended requests rather than accepting search snippets or guessed prices.
+No row is promoted as confirmed unless its source supplied the price. A partial attempt updates and histories the proven rows while leaving each failed row visibly blocked; one blocked retailer no longer freezes every other product. Models whose only usable source is persistently blocked may be replaced with comparable, currently purchasable models that preserve the dashboard's tap-count, complete-kit, and Houston-garage decision coverage.
 
 ## Adding Models
 

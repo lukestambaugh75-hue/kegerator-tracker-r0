@@ -1614,7 +1614,7 @@ def test_history_repair_cli_reports_exact_check_counts_and_exit_codes(tmp_path):
     assert after.stdout.strip() == "24 kept, 0 would remove"
 
 
-def test_checked_in_snapshot_and_history_match_truthful_partial_refresh():
+def test_checked_in_snapshot_and_history_match_complete_current_refresh():
     from scripts.refresh_state import validate_refresh_status
 
     listings = json.loads(Path("data/listings.json").read_text(encoding="utf-8"))
@@ -1625,15 +1625,12 @@ def test_checked_in_snapshot_and_history_match_truthful_partial_refresh():
 
     assert len(listings) == 24
     confirmed = [row for row in listings if row["data_quality"] == "confirmed"]
-    blocked = [row for row in listings if row["data_quality"] == "blocked"]
-    assert len(confirmed) == 21
-    assert len(blocked) == 3
+    assert len(confirmed) == 24
     assert {row["retrieved"] for row in confirmed} == {status["last_attempt_at_utc"]}
-    assert all(row["retrieved"] != status["last_attempt_at_utc"] for row in blocked)
     assert status["source_count"] == len(listings)
     assert status["row_count"] == len(listings)
-    assert status["last_attempt_status"] == "partial"
-    assert status["quality_counts"] == {"verified": 21, "estimated": 0, "blocked": 3}
+    assert status["last_attempt_status"] == "success"
+    assert status["quality_counts"] == {"verified": 24, "estimated": 0, "blocked": 0}
     assert len(history_rows) >= 24
     assert {row["data_quality"] for row in history_rows} == {"confirmed"}
 

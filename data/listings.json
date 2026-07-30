@@ -16,7 +16,7 @@
     "outdoor_rated": false,
     "source_url": "https://www.shopappliances.com/products/danby-dkc054a1bsl2db",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "EdgeStar",
@@ -35,7 +35,7 @@
     "outdoor_rated": false,
     "source_url": "https://bath4all.com/products/edgestar-br2001bl-20-inch-wide-ultra-low-temp-refrigerator-for-kegerator-conversion-black",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "EdgeStar",
@@ -54,7 +54,7 @@
     "outdoor_rated": false,
     "source_url": "https://bath4all.com/products/edgestar-br2001ss-20-inch-wide-ultra-low-temp-refrigerator-for-kegerator-conversion",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "EdgeStar",
@@ -73,7 +73,7 @@
     "outdoor_rated": false,
     "source_url": "https://bath4all.com/products/edgestar-br3002bl-24-inch-wide-kegerator-conversion-refrigerator-for-full-size-kegs-black",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "EdgeStar",
@@ -92,7 +92,7 @@
     "outdoor_rated": true,
     "source_url": "https://bath4all.com/products/edgestar-br7001ssod-24-inch-wide-outdoor-kegerator-conversion-refrigerator",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "EdgeStar",
@@ -111,7 +111,7 @@
     "outdoor_rated": false,
     "source_url": "https://bath4all.com/products/edgestar-kc1000ss-18-inch-wide-kegerator",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "EdgeStar",
@@ -130,7 +130,7 @@
     "outdoor_rated": true,
     "source_url": "https://bath4all.com/products/edgestar-kc7000ssod-24-inch-wide-outdoor-kegerator-for-full-size-kegs",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -150,7 +150,7 @@
     "source_url": "https://www.beveragefactory.com/draftbeer/kegerators/home-brew/hbk209s-2.html",
     "source_model": "HBK209S-2NK",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -169,7 +169,7 @@
     "outdoor_rated": true,
     "source_url": "https://www.beveragefactory.com/draftbeer/kegerators/commercial/kegco-hk38bsc-2-dual-faucet-digital-commercial-undercounter-kegerator.html",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -188,7 +188,7 @@
     "outdoor_rated": true,
     "source_url": "https://www.beveragefactory.com/draftbeer/kegerators/dualkegerator/kegco-HK38BSU-2-dual-faucet-digital-undercounter-kegerator.html",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -207,7 +207,7 @@
     "outdoor_rated": true,
     "source_url": "https://www.beveragefactory.com/draftbeer/kegerators/commercial/kegco-hk38ssc-l-2-dual-faucet-digital-commercial-outdoor-kegerator.html",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -218,15 +218,15 @@
     "type": "kegerator",
     "complete_kit": true,
     "retailer": "Kegco.com",
-    "current_price": 1822.01,
+    "current_price": 1843.01,
     "list_price": 1913,
-    "discount_pct": 4.76,
+    "discount_pct": 3.66,
     "in_stock": true,
     "garage_suitability": "Best - outdoor rated",
     "outdoor_rated": true,
     "source_url": "https://kegco.com/products/24-wide-dual-tap-all-stainless-steel-outdoor-builtin-right-hinge-kegerator-with-kit",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -246,7 +246,7 @@
     "source_url": "https://www.beveragefactory.com/draftbeer/kegerators/kegco_k209ss-1_kegerator.html",
     "source_model": "K209SS-1NK",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -266,7 +266,7 @@
     "source_url": "https://www.beveragefactory.com/draftbeer/kegerators/kegco_k309b-1_digital_kegerator.html",
     "source_model": "K309B-1NK",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -277,15 +277,15 @@
     "type": "kegerator",
     "complete_kit": true,
     "retailer": "Kegco.com",
-    "current_price": 914.55,
+    "current_price": 933.45,
     "list_price": 961,
-    "discount_pct": 4.83,
+    "discount_pct": 2.87,
     "in_stock": true,
     "garage_suitability": "Good - deep-chill + fan-forced",
     "outdoor_rated": false,
     "source_url": "https://kegco.com/products/24-wide-single-tap-black-digital-kegerator",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -305,7 +305,7 @@
     "source_url": "https://www.beveragefactory.com/draftbeer/kegerators/dualkegerator/kegco_k309b-2_dual_faucet_kegerator.html",
     "source_model": "K309B-2NK",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -316,15 +316,15 @@
     "type": "kegerator",
     "complete_kit": true,
     "retailer": "Kegco.com",
-    "current_price": 1004.85,
+    "current_price": 1025.85,
     "list_price": 1055.99,
-    "discount_pct": 4.84,
+    "discount_pct": 2.85,
     "in_stock": true,
     "garage_suitability": "Good - deep-chill + fan-forced",
     "outdoor_rated": false,
     "source_url": "https://kegco.com/products/24-wide-dual-tap-black-digital-kegerator",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -344,7 +344,7 @@
     "source_url": "https://www.beveragefactory.com/draftbeer/kegerators/kegco_k309ss-1_digital_kegerator.html",
     "source_model": "K309SS-1NK",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -364,7 +364,7 @@
     "source_url": "https://www.beveragefactory.com/draftbeer/kegerators/dualkegerator/kegco_k309ss-2_dual_faucet_kegerator.html",
     "source_model": "K309SS-2NK",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -375,15 +375,15 @@
     "type": "kegerator",
     "complete_kit": true,
     "retailer": "Kegco.com",
-    "current_price": 869.71,
+    "current_price": 890.71,
     "list_price": 1066.99,
-    "discount_pct": 18.49,
+    "discount_pct": 16.52,
     "in_stock": true,
     "garage_suitability": "Good - deep-chill + fan-forced",
     "outdoor_rated": false,
     "source_url": "https://kegco.com/products/24-wide-dual-tap-stainless-steel-digital-kegerator",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -403,7 +403,7 @@
     "source_url": "https://www.beveragefactory.com/draftbeer/kegerators/kegco-k309x-1-digital-kegerator.html",
     "source_model": "K309X-1NK",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -423,7 +423,7 @@
     "source_url": "https://www.beveragefactory.com/draftbeer/kegerators/dualkegerator/kegco-k309x-2-dual-faucet-kegerator.html",
     "source_model": "K309X-2NK",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Kegco",
@@ -443,7 +443,7 @@
     "source_url": "https://www.beveragefactory.com/draftbeer/kegerators/kegco-z163s-2-commercial-grade-digital-kegerator.html",
     "source_model": "Z163S-2NK",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   },
   {
     "brand": "Summit",
@@ -462,6 +462,6 @@
     "outdoor_rated": true,
     "source_url": "https://www.ajmadison.com/cgi-bin/ajmadison/SBC683OSTWIN.html",
     "data_quality": "confirmed",
-    "retrieved": "2026-07-29T19:26:11.971459Z"
+    "retrieved": "2026-07-30T06:02:29.310872Z"
   }
 ]

@@ -81,4 +81,12 @@ A repair is never inferred from a failure. The sole allowlisted repair is a one-
 
 This repository does not currently have a trusted external mail-receipt adapter. Arbitrary detached JSON, screenshots, and AI-authored observations are rejected as receipts. A browser send attempt can therefore finish only as `delivery_unverified`; the terminal summary never claims `delivered`.
 
-The file `automation/kegerator-tracker-email.toml` is a repository documentation mirror of the intended run contract only. It must never be copied over, or treated as proof of, the live scheduler configuration; live scheduler changes use a supported Codex surface. This repository change does not modify the live scheduler.
+The file `automation/kegerator-tracker-email.toml` is a repository documentation mirror of the intended run contract only. It must never be copied over, or treated as proof of, the live scheduler configuration; live scheduler changes use a supported Codex surface.
+
+## Production encrypted delivery
+
+`python3 tools/encrypted_dashboard_delivery.py check` validates the same complete
+24-offer private dashboard used by the approved pilot. The production script
+uses the shared pending/finalize lifecycle and preserves the exact Luke-and-Devin
+audience. The pilot's default-off publication flag remains unchanged and is not
+used by the scheduled workflow.

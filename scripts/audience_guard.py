@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import html
 import json
@@ -12,7 +13,7 @@ import re
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 try:
     from .refresh_state import (
@@ -30,6 +31,10 @@ CANONICAL_DASHBOARD_URL = "https://lukestambaugh75-hue.github.io/kegerator-track
 CANONICAL_INDEX_PATH = Path("index.html")
 CANONICAL_INDEX_SHA256 = "26e5806df57cb4b933f9fc7a1f0139240fa7f2c6b00d8a8c0c39c5c3bb0794a0"
 EXPECTED_RECIPIENTS = ["lukestambaugh75@gmail.com", "devin.mullen89@gmail.com"]
+ENCRYPTED_PILOT_HOST = "lukestambaugh75-hue.github.io"
+ENCRYPTED_PILOT_REPO_PATH = "/encrypted-tracker-link-publisher-r0"
+OPAQUE_PILOT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{20,80}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 EMAIL_PAYLOAD_FIELDS = {
     "to",
     "cc",
@@ -203,6 +208,55 @@ REGEX_PREFIX_PUNCTUATION = {
 
 class AudienceBoundaryError(ValueError):
     """Raised when content crosses the Kegerator audience boundary."""
+
+
+def validate_encrypted_pilot_receipt(
+    receipt: dict,
+    *,
+    expected_snapshot_id: str,
+    expected_binding_id: str,
+) -> None:
+    """Validate a private magic-link receipt without exposing its key."""
+    expected_fields = {
+        "audience_id",
+        "binding_id",
+        "snapshot_id",
+        "ciphertext_sha256",
+        "dashboard_url",
+    }
+    if not isinstance(receipt, dict) or set(receipt) != expected_fields:
+        raise AudienceBoundaryError("encrypted pilot receipt fields are invalid")
+    audience_id = receipt.get("audience_id")
+    binding_id = receipt.get("binding_id")
+    if not OPAQUE_PILOT_ID_RE.fullmatch(str(audience_id or "")):
+        raise AudienceBoundaryError("encrypted pilot audience ID is not opaque")
+    if binding_id != expected_binding_id or not OPAQUE_PILOT_ID_RE.fullmatch(str(binding_id or "")):
+        raise AudienceBoundaryError("encrypted pilot binding ID does not match")
+    if receipt.get("snapshot_id") != expected_snapshot_id:
+        raise AudienceBoundaryError("encrypted pilot snapshot does not match current evidence")
+    if not SHA256_RE.fullmatch(str(receipt.get("ciphertext_sha256") or "")):
+        raise AudienceBoundaryError("encrypted pilot ciphertext digest is invalid")
+    parsed = urlsplit(str(receipt.get("dashboard_url") or ""))
+    expected_path = f"{ENCRYPTED_PILOT_REPO_PATH}/e/{audience_id}/"
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != ENCRYPTED_PILOT_HOST
+        or parsed.path != expected_path
+        or parsed.query
+    ):
+        raise AudienceBoundaryError("encrypted pilot dashboard route is invalid")
+    fragment = parse_qs(parsed.fragment, strict_parsing=True)
+    if set(fragment) != {"k"} or len(fragment["k"]) != 1:
+        raise AudienceBoundaryError("encrypted pilot link must contain exactly one key")
+    encoded_key = fragment["k"][0]
+    if not re.fullmatch(r"[A-Za-z0-9_-]{43}", encoded_key):
+        raise AudienceBoundaryError("encrypted pilot key encoding is invalid")
+    try:
+        key = base64.urlsafe_b64decode(encoded_key + "=")
+    except Exception as exc:
+        raise AudienceBoundaryError("encrypted pilot key encoding is invalid") from exc
+    if len(key) != 32:
+        raise AudienceBoundaryError("encrypted pilot key length is invalid")
 
 
 def listing_source_urls(listings: list[dict]) -> frozenset[str]:

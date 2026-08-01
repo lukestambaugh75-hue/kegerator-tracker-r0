@@ -65,6 +65,12 @@ Generated email payloads are addressed exactly to:
 
 No CC/BCC. This repo generates `out/latest-email.json`; the builder refuses any alternate dashboard URL or recipient set and embeds an identity for the exact listings, specs, and refresh-status inputs. A payload built before input drift is rejected. Sending uses the approved signed-in Chrome/Gmail browser route so it does not depend on the Gmail connector OAuth scope. Before sending, verify the two recipient chips, no CC/BCC, subject, body, dashboard link, and a passing audience guard.
 
+## Default-off encrypted dashboard pilot
+
+`make encrypted-pilot-check` builds and validates the full 24-row private dashboard entirely in memory. It does not publish, change the current email, change the existing public dashboard, or alter the scheduled task. The dashboard includes every current offer, direct retailer links, price changes from history, availability, evidence time, confidence, validation, and model specifications.
+
+Publication is a separate manual operation and fails closed unless `KGERATOR_ENCRYPTED_DASHBOARD_PILOT=1` is explicitly present. A successful publication writes only ciphertext to the dedicated public Pages repository and writes the complete bearer link to a permission-restricted receipt outside every Git repository. The scheduled automation does not set this flag.
+
 ## Detached Run Evidence
 
 The local email lane records canonical, ignored, nonsymlink evidence under `out/`; it must never be committed. `out/run-state.json` is a non-authoritative terminal summary with run, workflow, lane, owner-process, live-origin, start/finish UTC, start/result commit SHAs, recovery evidence, and ordered preflight, freshness, blocker, repair, verification, deployment, payload, pre-send, and receipt stages. Each observed stage carries the run ID and refresh source SHA. Every full lane transition is serialized by a kernel lock on the already-open repository directory, not a replaceable lock pathname. Evidence parents and files are opened relative to held directory descriptors with no-follow and exclusive-create controls, then their identities are rechecked before the repository lock is released.

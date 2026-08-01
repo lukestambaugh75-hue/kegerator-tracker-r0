@@ -1,7 +1,7 @@
 PY := /usr/bin/python3
 PORT ?= 8767
 
-.PHONY: refresh json test audience verify verify-current email-content open serve pages-check
+.PHONY: refresh json test audience verify verify-current email-content encrypted-pilot-check open serve pages-check
 
 refresh:
 	$(PY) scripts/refresh.py
@@ -25,6 +25,9 @@ verify-current: json test audience
 
 email-content:
 	$(PY) tools/build_email.py --output-dir out
+
+encrypted-pilot-check:
+	$(PY) tools/encrypted_dashboard_pilot.py
 
 open:
 	$(PY) scripts/serve_dashboard.py --port $(PORT)

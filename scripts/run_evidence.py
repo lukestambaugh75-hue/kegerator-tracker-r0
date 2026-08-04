@@ -220,7 +220,7 @@ class _EvidenceAuthority:
         self.root_stat: os.stat_result | None = None
         self.out_stat: os.stat_result | None = None
         self.observed_dirs: dict[str, tuple[int, int]] = {}
-        self.observed_files: dict[str, tuple[int, int, int, int, int, int, int]] = {}
+        self.observed_files: dict[str, tuple[int, int, int, int, int, int]] = {}
 
     def acquire(self) -> None:
         try:
@@ -345,7 +345,7 @@ class _EvidenceAuthority:
         return value.st_dev, value.st_ino, value.st_mode, value.st_nlink
 
     @staticmethod
-    def _snapshot(value: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    def _snapshot(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
         return (
             value.st_dev,
             value.st_ino,
@@ -353,7 +353,6 @@ class _EvidenceAuthority:
             value.st_nlink,
             value.st_size,
             value.st_mtime_ns,
-            value.st_ctime_ns,
         )
 
     def _remember(

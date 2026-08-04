@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -1618,6 +1619,46 @@ def test_replacing_state_file_is_detected_before_atomic_transition_write(
     assert "evidence file identity changed" in str(result[0])
     persisted = json.loads(state_path.read_text(encoding="utf-8"))
     assert persisted["stages"]["freshness"]["status"] == "in_progress"
+
+
+def test_ctime_only_change_does_not_fail_a_held_transition(evidence_repo: Path):
+    from scripts.run_evidence import execute_refresh_once
+
+    state_path = _start(evidence_repo)
+    entered = threading.Event()
+    release = threading.Event()
+    result: list[object] = []
+    base_runner = _refresh_runner(evidence_repo)
+
+    def slow_runner(command, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5)
+        return base_runner(command, **kwargs)
+
+    def invoke():
+        try:
+            result.append(
+                execute_refresh_once(
+                    evidence_repo,
+                    state_path,
+                    now=ATTEMPT,
+                    runner=slow_runner,
+                )
+            )
+        except Exception as exc:
+            result.append(exc)
+
+    worker = threading.Thread(target=invoke)
+    worker.start()
+    assert entered.wait(timeout=5)
+    before = state_path.stat()
+    time.sleep(0.01)
+    os.chmod(state_path, stat.S_IMODE(before.st_mode))
+    assert state_path.stat().st_ctime_ns > before.st_ctime_ns
+    release.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert len(result) == 1 and isinstance(result[0], dict)
 
 
 def test_evidence_rejects_hardlinks_ignores_legacy_lock_symlink_and_outcome_is_exclusive(
